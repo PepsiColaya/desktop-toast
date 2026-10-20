@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QColor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPixmap,
+    QColor, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPixmap,
 )
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QListView,
@@ -228,8 +228,8 @@ class SettingsWindow(QWidget):
         self._loading = False
 
         self.setWindowTitle("微信消息提示 · 设置")
-        self.setMinimumSize(880, 620)
-        self.resize(940, 820)
+        self.setMinimumSize(880, 560)
+        self.resize(940, 880)
         self.setStyleSheet(STYLE)
 
         self._preview_timer = QTimer(self)
@@ -498,6 +498,13 @@ class SettingsWindow(QWidget):
         if cfg is not None:
             self._cfg = cfgmod.normalize(dict(cfg))
             self._load_from_cfg()
+
+        # 小屏幕上把窗口压到可用高度内，内容区自带滚动条
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        max_h = screen.height() - 60
+        if self.height() > max_h:
+            self.resize(self.width(), max_h)
+
         self._refresh_preview()
         self.show()
         self.raise_()
