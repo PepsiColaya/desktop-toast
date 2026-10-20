@@ -2,15 +2,16 @@
 """微信消息悬浮卡片（Qt 绘制：圆角、阴影、淡入淡出、多条堆叠）。"""
 from __future__ import annotations
 
+import os
 from collections import deque
 from typing import Callable, Optional
 
 from PySide6.QtCore import (
-    QEasingCurve, QObject, QPoint, QPropertyAnimation, QRect, QRectF, Qt, QTimer, Signal,
+    QEasingCurve, QObject, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath,
-    QPen, QPixmap,
+    QAction, QColor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter,
+    QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QWidget
 
@@ -31,14 +32,57 @@ THEMES = {
     },
 }
 
-AVATAR_COLORS = ["#5B8DEF", "#E8743B", "#2FB38A", "#9B6BD6",
-                 "#D9614C", "#3C9BD1", "#C79A2E", "#6E7BD9"]
+# 头像占位色：成对渐变，按名字散列固定挑选
+AVATAR_GRADIENTS = [
+    ("#6EA8FE", "#3B6FD4"),
+    ("#F0A868", "#D9614C"),
+    ("#4ED4A0", "#2FB38A"),
+    ("#B48CE8", "#7C4DD6"),
+    ("#F08A9E", "#D14A6B"),
+    ("#5CC2E8", "#2E86C1"),
+    ("#E8C468", "#C79A2E"),
+    ("#8A94E8", "#5B67C7"),
+]
+
+AVATAR_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+_avatar_cache: dict = {}
 
 
-def avatar_color(name: str) -> str:
+def avatar_gradient(name: str) -> tuple[str, str]:
     if not name:
-        return AVATAR_COLORS[0]
-    return AVATAR_COLORS[sum(ord(c) for c in name) % len(AVATAR_COLORS)]
+        return AVATAR_GRADIENTS[0]
+    return AVATAR_GRADIENTS[sum(ord(c) for c in name) % len(AVATAR_GRADIENTS)]
+
+
+def safe_filename(name: str) -> str:
+    """把会话名转成可用的文件名（去掉 Windows 非法字符）。"""
+    bad = '\\/:*?"<>|'
+    out = "".join("_" if c in bad else c for c in (name or "").strip())
+    return out.rstrip(". ") or "_"
+
+
+def load_avatar(name: str, avatar_dir: str) -> Optional[QPixmap]:
+    """在头像目录里按会话名找图片，命中则返回，带 mtime 缓存。"""
+    if not avatar_dir or not name:
+        return None
+
+    base = os.path.join(avatar_dir, safe_filename(name))
+    for ext in AVATAR_EXTS:
+        path = base + ext
+        if not os.path.exists(path):
+            continue
+        try:
+            key = (path, os.path.getmtime(path))
+        except OSError:
+            continue
+        if key in _avatar_cache:
+            return _avatar_cache[key]
+        pm = QPixmap(path)
+        pm = None if pm.isNull() else pm
+        _avatar_cache[key] = pm
+        return pm
+    return None
 
 
 def wrap_text(text: str, fm: QFontMetrics, max_width: int, max_lines: int = 2) -> list[str]:
@@ -95,6 +139,7 @@ class Toast(QWidget):
 
         # ---- 由配置推导尺寸 ----
         k = float(cfg.get("scale", 1.0))
+        self.avatar_dir = cfg.get("avatar_dir") or ""
         self.card_w = int(cfg.get("card_width", 340))
         self.shadow = int(cfg.get("shadow", 16))
         self.radius = int(cfg.get("radius", 14))
@@ -205,18 +250,41 @@ class Toast(QWidget):
         p.fillPath(path, bg)
         p.strokePath(path, QPen(self.theme["border"], 1))
 
-        # 头像
+        # 头像：优先用 avatars 目录里的真实头像，否则渐变首字兜底
         d = self.avatar
         ax = s + self.pad
         ay = s + (self.card_h - d) / 2
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(avatar_color(self.msg.source)))
-        p.drawEllipse(QRectF(ax, ay, d, d))
+        self._draw_avatar(p, QRectF(ax, ay, d, d))
 
-        p.setPen(QColor("#FFFFFF"))
-        p.setFont(self.f_avatar)
-        initial = (self.msg.source or "?")[0]
-        p.drawText(QRectF(ax, ay - 1, d, d), Qt.AlignCenter, initial)
+    def _draw_avatar(self, p: QPainter, rect: QRectF):
+        d = rect.width()
+        clip = QPainterPath()
+        clip.addEllipse(rect)
+
+        pm = load_avatar(self.msg.source, self.avatar_dir)
+        p.save()
+        p.setClipPath(clip)
+
+        if pm is not None and not pm.isNull():
+            # 放大两倍渲染再缩小，边缘更清晰
+            scaled = pm.scaled(int(d * 2), int(d * 2), Qt.KeepAspectRatioByExpanding,
+                               Qt.SmoothTransformation)
+            scaled.setDevicePixelRatio(2.0)
+            lw, lh = scaled.width() / 2.0, scaled.height() / 2.0
+            p.drawPixmap(QPointF(rect.x() + (d - lw) / 2, rect.y() + (d - lh) / 2), scaled)
+        else:
+            c1, c2 = avatar_gradient(self.msg.source)
+            grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
+            grad.setColorAt(0.0, QColor(c1))
+            grad.setColorAt(1.0, QColor(c2))
+            p.fillPath(clip, grad)
+
+            p.setPen(QColor("#FFFFFF"))
+            p.setFont(self.f_avatar)
+            initial = (self.msg.source or "?")[0]
+            p.drawText(rect.adjusted(0, -1, 0, -1), Qt.AlignCenter, initial)
+
+        p.restore()
 
     # ---------- 交互 ----------
     def enterEvent(self, _evt):

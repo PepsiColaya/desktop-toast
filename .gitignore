@@ -18,6 +18,10 @@ showcase.png
 *.log
 *.tmp
 
+# 用户自备的头像（保留目录本身）
+avatars/*
+!avatars/.gitkeep
+
 # 编辑器 / 系统
 .vscode/
 .idea/

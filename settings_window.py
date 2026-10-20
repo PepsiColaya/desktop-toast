@@ -2,14 +2,17 @@
 """可视化设置面板：左侧调参，右侧实时预览。"""
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import (
+    QColor, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPixmap,
+)
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QListView,
-    QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 import config as cfgmod
@@ -257,6 +260,7 @@ class SettingsWindow(QWidget):
         lv.addWidget(self._build_appearance())
         lv.addWidget(self._build_position())
         lv.addWidget(self._build_behavior())
+        lv.addWidget(self._build_avatar())
         lv.addStretch(1)
 
         scroll = QScrollArea()
@@ -389,6 +393,43 @@ class SettingsWindow(QWidget):
 
         return box
 
+    def _build_avatar(self) -> QGroupBox:
+        box = QGroupBox("头像")
+        lay = QVBoxLayout(box)
+        lay.setSpacing(6)
+
+        hint = QLabel(
+            "把头像图片命名为「会话名.png」放进下面的目录，卡片就会显示真实头像；"
+            "没匹配到的会话用首字渐变占位。"
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.lb_avatar_dir = QLabel()
+        self.lb_avatar_dir.setObjectName("hint")
+        self.lb_avatar_dir.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row.addWidget(self.lb_avatar_dir, 1)
+
+        btn = QPushButton("打开目录")
+        btn.clicked.connect(self._open_avatar_dir)
+        row.addWidget(btn)
+        lay.addLayout(row)
+
+        return box
+
+    def _open_avatar_dir(self):
+        d = self._cfg.get("avatar_dir") or ""
+        if not d:
+            return
+        try:
+            os.makedirs(d, exist_ok=True)
+            os.startfile(d)
+        except Exception as e:
+            QMessageBox.warning(self, "打不开目录", f"{d}\n\n{e}")
+
     # ---------------- 读写配置 ----------------
     def _load_from_cfg(self):
         self._loading = True
@@ -411,6 +452,11 @@ class SettingsWindow(QWidget):
 
         self.chk_hover.setChecked(bool(c["hover_pause"]))
         self.chk_click.setChecked(bool(c["click_to_open_wechat"]))
+
+        path = c.get("avatar_dir", "")
+        fm = QFontMetrics(self.lb_avatar_dir.font())
+        self.lb_avatar_dir.setText(fm.elidedText(path, Qt.ElideMiddle, 230))
+        self.lb_avatar_dir.setToolTip(path)
 
         self._loading = False
 

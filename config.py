@@ -30,6 +30,7 @@ DEFAULT_CONFIG: dict = {
     "click_to_open_wechat": True,
     "poll_interval_ms": 1000,        # 通知轮询间隔
     "ignore_sources": [],            # 不提醒的会话名
+    "avatar_dir": "",                # 头像目录，留空则用程序目录下的 avatars
 }
 
 # 数值型配置的合法区间，读取和保存时都会夹紧
@@ -79,6 +80,10 @@ def normalize(cfg: dict) -> dict:
         out["position"] = "top-right"
     if not isinstance(out["ignore_sources"], list):
         out["ignore_sources"] = []
+
+    # 头像目录留空时落到程序目录下的 avatars
+    if not out.get("avatar_dir"):
+        out["avatar_dir"] = os.path.join(base_dir(), "avatars")
 
     return out
 
