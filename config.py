@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 
 APP_NAME = "WeChatToast"
@@ -50,15 +51,50 @@ RANGES: dict = {
 }
 
 
-def base_dir() -> str:
-    """源码运行取脚本目录，打包后取 exe 所在目录。"""
+def app_dir() -> str:
+    """程序所在目录：源码运行时是脚本目录，打包后是 exe 所在目录。"""
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def config_dir() -> str:
+    """配置目录。
+
+    打包后固定放到 %APPDATA%\\WeChatToast，这样 exe 被移动、复制、重新下载都不会丢配置；
+    源码运行时直接用项目目录，方便开发调试。
+    """
+    if getattr(sys, "frozen", False):
+        root = os.environ.get("APPDATA") or os.path.expanduser("~")
+        d = os.path.join(root, "WeChatToast")
+    else:
+        d = app_dir()
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def config_path() -> str:
-    return os.path.join(base_dir(), "config.json")
+    return os.path.join(config_dir(), "config.json")
+
+
+def default_avatar_dir() -> str:
+    """默认头像目录：跟着配置目录走，不跟 exe 位置绑死。"""
+    return os.path.join(config_dir(), "avatars")
+
+
+def _migrate_legacy() -> None:
+    """旧版把 config.json 放在 exe 同目录，这里迁移到配置目录，避免用户配置丢失。"""
+    if not getattr(sys, "frozen", False):
+        return
+
+    old = os.path.join(app_dir(), "config.json")
+    new = config_path()
+    if os.path.exists(old) and not os.path.exists(new):
+        try:
+            shutil.copy2(old, new)
+            print(f"[info] 已迁移旧配置: {old} -> {new}")
+        except Exception as e:
+            print(f"[warn] 配置迁移失败: {e}")
 
 
 def normalize(cfg: dict) -> dict:
@@ -81,31 +117,60 @@ def normalize(cfg: dict) -> dict:
     if not isinstance(out["ignore_sources"], list):
         out["ignore_sources"] = []
 
-    # 头像目录留空时落到程序目录下的 avatars
-    if not out.get("avatar_dir"):
-        out["avatar_dir"] = os.path.join(base_dir(), "avatars")
+    # 头像目录留空时落到配置目录下的 avatars
+    av = out.get("avatar_dir") or ""
+    # 旧版把默认头像目录记成了 exe 同目录的绝对路径，迁移后要重新指向新配置目录
+    if av and os.path.normcase(os.path.normpath(av)) == os.path.normcase(
+        os.path.normpath(os.path.join(app_dir(), "avatars"))
+    ) and os.path.normcase(os.path.normpath(av)) != os.path.normcase(
+        os.path.normpath(default_avatar_dir())
+    ):
+        av = ""
+    out["avatar_dir"] = av or default_avatar_dir()
 
     return out
 
 
+def _for_file(cfg: dict) -> dict:
+    """落盘用的形态：默认头像目录不写死进文件，避免换机器/换路径后失效。"""
+    out = dict(cfg)
+    if os.path.normcase(os.path.normpath(out["avatar_dir"])) == os.path.normcase(
+        os.path.normpath(default_avatar_dir())
+    ):
+        out["avatar_dir"] = ""
+    return out
+
+
 def load() -> dict:
+    _migrate_legacy()
     path = config_path()
     if not os.path.exists(path):
-        return dict(DEFAULT_CONFIG)
+        cfg = normalize(dict(DEFAULT_CONFIG))
+        _write(_for_file(cfg))
+        return cfg
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return normalize(json.load(f))
+            raw = json.load(f)
     except Exception as e:
         print(f"[warn] 配置读取失败，使用默认值: {e}")
-        return dict(DEFAULT_CONFIG)
+        return normalize(dict(DEFAULT_CONFIG))
+
+    cfg = normalize(raw)
+    # 文件内容与规范化结果不一致时（缺字段、越界、旧路径）顺手修好，避免用户手动改
+    if _for_file(cfg) != raw:
+        _write(_for_file(cfg))
+    return cfg
 
 
-def save(cfg: dict) -> bool:
-    cfg = normalize(cfg)
+def _write(data: dict) -> bool:
     try:
         with open(config_path(), "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         print(f"[error] 配置保存失败: {e}")
         return False
+
+
+def save(cfg: dict) -> bool:
+    return _write(_for_file(normalize(cfg)))

@@ -236,6 +236,11 @@ class SettingsWindow(QWidget):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._refresh_preview)
 
+        # 改动后自动落盘，不需要手动点保存
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(self._autosave)
+
         self._build()
         self._load_from_cfg()
         self._refresh_preview()
@@ -303,18 +308,25 @@ class SettingsWindow(QWidget):
         btn_test = QPushButton("在桌面试一下")
         btn_test.clicked.connect(lambda: self.test_requested.emit(dict(self._cfg)))
 
-        btn_cancel = QPushButton("取消")
-        btn_cancel.clicked.connect(self.hide)
+        self.lb_saved = QLabel("")
+        self.lb_saved.setObjectName("hint")
 
-        btn_save = QPushButton("保存并应用")
-        btn_save.setObjectName("primary")
-        btn_save.clicked.connect(self._save)
+        # 配置落地位置放在底栏，用户随时能看到，又不占左栏高度
+        self.lb_cfg_path = QLabel()
+        self.lb_cfg_path.setObjectName("hint")
+        self.lb_cfg_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        btn_close = QPushButton("完成")
+        btn_close.setObjectName("primary")
+        btn_close.clicked.connect(self.hide)
 
         bar.addWidget(btn_reset)
         bar.addWidget(btn_test)
+        bar.addWidget(self.lb_saved)
         bar.addStretch(1)
-        bar.addWidget(btn_cancel)
-        bar.addWidget(btn_save)
+        bar.addWidget(self.lb_cfg_path)
+        bar.addSpacing(10)
+        bar.addWidget(btn_close)
         root.addLayout(bar)
 
     def _build_appearance(self) -> QGroupBox:
@@ -458,6 +470,10 @@ class SettingsWindow(QWidget):
         self.lb_avatar_dir.setText(fm.elidedText(path, Qt.ElideMiddle, 230))
         self.lb_avatar_dir.setToolTip(path)
 
+        cfgp = cfgmod.config_path()
+        self.lb_cfg_path.setText("配置：" + fm.elidedText(cfgp, Qt.ElideMiddle, 240))
+        self.lb_cfg_path.setToolTip("配置自动保存在：\n" + cfgp)
+
         self._loading = False
 
     def _collect(self):
@@ -481,18 +497,31 @@ class SettingsWindow(QWidget):
         if self._loading:
             return
         self._collect()
-        self._preview_timer.start(90)      # 防抖，拖动滑块时不至于卡
+        self._preview_timer.start(90)       # 防抖，拖动滑块时不至于卡
+        self._autosave_timer.start(500)     # 停手半秒后自动落盘
 
     def _reset(self):
         self._cfg = dict(cfgmod.DEFAULT_CONFIG)
         self._load_from_cfg()
         self._refresh_preview()
+        self._autosave()
 
-    def _save(self):
+    def _autosave(self):
+        """把当前控件值写入配置文件并即时应用到运行中的程序。"""
         self._collect()
         if cfgmod.save(self._cfg):
             self.applied.emit(dict(self._cfg))
-            self.hide()
+            self.lb_saved.setText("已自动保存")
+            QTimer.singleShot(1800, lambda: self.lb_saved.setText(""))
+        else:
+            self.lb_saved.setText("保存失败，请检查目录权限")
+
+    def hideEvent(self, evt):
+        super().hideEvent(evt)
+        # 关窗口时兜底保存一次，防止防抖计时器还没触发
+        if self._autosave_timer.isActive():
+            self._autosave_timer.stop()
+            self._autosave()
 
     def show_window(self, cfg: Optional[dict] = None):
         if cfg is not None:

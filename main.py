@@ -134,7 +134,6 @@ def main() -> int:
         cfg.clear()
         cfg.update(new_cfg)
         manager.cfg = cfg
-        tray.showMessage(APP_TITLE, "设置已保存", QSystemTrayIcon.Information, 1500)
 
     settings.applied.connect(apply_cfg)
 
