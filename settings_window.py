@@ -8,8 +8,8 @@ from typing import Callable, Optional
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QListView,
+    QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 import config as cfgmod
@@ -45,6 +45,25 @@ QComboBox {
     padding: 5px 10px; background: #FFFFFF; min-width: 110px;
 }
 QComboBox:hover { border-color: #07C160; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView {
+    background-color: #FFFFFF;
+    border: 1px solid #DDDDE5;
+    border-radius: 8px;
+    padding: 4px;
+    outline: 0;
+    selection-background-color: #E8F8EF;
+    selection-color: #07A050;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 26px;
+    padding-left: 8px;
+    color: #22222A;
+}
+QComboBox QAbstractItemView::item:hover {
+    background-color: #F2FBF6;
+    color: #07A050;
+}
 QCheckBox { spacing: 8px; }
 QCheckBox::indicator {
     width: 16px; height: 16px; border-radius: 4px;
@@ -69,6 +88,41 @@ QScrollBar::handle:vertical:hover { background: #BEBEC8; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QFrame#sep { background: #ECECF2; border: none; max-height: 1px; }
 """
+
+
+POPUP_QSS = """
+QListView {
+    background-color: #FFFFFF;
+    border: 1px solid #DDDDE5;
+    border-radius: 8px;
+    padding: 4px;
+    outline: 0;
+}
+QListView::item {
+    min-height: 27px;
+    padding-left: 8px;
+    color: #22222A;
+    border-radius: 5px;
+}
+QListView::item:hover { background-color: #F2FBF6; color: #07A050; }
+QListView::item:selected { background-color: #E8F8EF; color: #07A050; }
+"""
+
+
+def style_combo(combo: QComboBox) -> None:
+    """给下拉框换上自定义列表视图。
+
+    Windows 原生风格的弹出列表不跟随 QSS，系统开深色主题时会变成黑底黑字，
+    这里显式指定 QListView 并单独上样式。
+    """
+    view = QListView()
+    view.setStyleSheet(POPUP_QSS)
+    combo.setView(view)
+
+    # 弹出层容器也要透明，否则圆角四角会露出底色
+    popup = view.window()
+    if popup is not None:
+        popup.setAttribute(Qt.WA_TranslucentBackground, True)
 
 
 class SliderRow(QWidget):
@@ -270,6 +324,7 @@ class SettingsWindow(QWidget):
         self.cb_theme = QComboBox()
         self.cb_theme.addItem("深色", "dark")
         self.cb_theme.addItem("浅色", "light")
+        style_combo(self.cb_theme)
         self.cb_theme.currentIndexChanged.connect(self._on_widget_change)
         row.addWidget(self.cb_theme)
         lay.addLayout(row)
@@ -300,6 +355,7 @@ class SettingsWindow(QWidget):
         for text, val in (("右上角", "top-right"), ("左上角", "top-left"),
                           ("右下角", "bottom-right"), ("左下角", "bottom-left")):
             self.cb_pos.addItem(text, val)
+        style_combo(self.cb_pos)
         self.cb_pos.currentIndexChanged.connect(self._on_widget_change)
         row.addWidget(self.cb_pos)
         lay.addLayout(row)
