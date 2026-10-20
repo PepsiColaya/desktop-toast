@@ -1,5 +1,9 @@
 # 微信消息提示 · WeChatToast
 
+[![release](https://img.shields.io/github/v/release/PepsiColaya/wechat-notifier)](https://github.com/PepsiColaya/wechat-notifier/releases/latest)
+[![license](https://img.shields.io/github/license/PepsiColaya/wechat-notifier)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://github.com/PepsiColaya/wechat-notifier)
+
 > 微信躲在后台时，也能一眼看到**谁发的、说了什么**。
 
 ![预览](docs/screenshot.png)
@@ -44,14 +48,14 @@ PC 微信最小化后，来消息只有任务栏闪一下，不看一眼根本�
 
 ### 方式一：直接跑 exe
 
-从 Releases 下载 `WeChatToast.exe` 双击运行。托盘出现绿色「微」图标就是启动成功了，**没有主窗口是正常的**。
+从 [Releases](https://github.com/PepsiColaya/wechat-notifier/releases/latest) 下载 `WeChatToast.exe` 双击运行。托盘出现绿色「微」图标就是启动成功了，**没有主窗口是正常的**。
 
 首次启动单文件 exe 需要解压，会等 3～8 秒。
 
 ### 方式二：源码运行
 
 ```bash
-git clone https://github.com/<your-name>/wechat-notifier.git
+git clone https://github.com/PepsiColaya/wechat-notifier.git
 cd wechat-notifier
 pip install -r requirements.txt
 python main.py
