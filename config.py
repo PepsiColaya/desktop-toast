@@ -9,6 +9,17 @@ import sys
 
 APP_NAME = "WeChatToast"
 
+
+def default_apps() -> list[dict]:
+    """默认只监听微信。
+
+    match 是一组小写子串，用来和通知里的 AUMID / 显示名做包含匹配。
+    微信各版本的应用标识不统一（微信 / WeChat / Weixin / Tencent.WeChat），
+    所以多放几个别名，避免换个版本就收不到。
+    """
+    return [{"key": "wechat", "name": "微信", "match": ["微信", "wechat", "weixin"]}]
+
+
 DEFAULT_CONFIG: dict = {
     # ---- 外观 ----
     "theme": "dark",                 # dark / light
@@ -22,6 +33,7 @@ DEFAULT_CONFIG: dict = {
     # ---- 位置 ----
     "position": "top-right",         # top-right / top-left / bottom-right / bottom-left
     "margin": 22,                    # 距屏幕边缘 px
+    "screen": "cursor",              # cursor=跟随鼠标所在屏幕，primary=主屏
     # ---- 行为 ----
     "duration_ms": 3000,             # 停留时长
     "max_visible": 3,                # 同屏最多几张
@@ -29,9 +41,15 @@ DEFAULT_CONFIG: dict = {
     "fade_out_ms": 280,
     "hover_pause": True,             # 鼠标悬停时暂停倒计时
     "click_to_open_wechat": True,
+    "merge_same_source": True,       # 同一会话连续消息合并成一张卡片
+    "show_content": True,            # 卡片是否显示消息正文；关掉只显示「有一条新消息」
     "poll_interval_ms": 1000,        # 通知轮询间隔
     "ignore_sources": [],            # 不提醒的会话名
     "avatar_dir": "",                # 头像目录，留空则用程序目录下的 avatars
+    # ---- 监听范围 ----
+    "enabled_apps": default_apps(),  # 只提醒这些应用的通知
+    # ---- 启动 ----
+    "autostart": False,              # 开机自启（写 HKCU Run 注册表项）
 }
 
 # 数值型配置的合法区间，读取和保存时都会夹紧
@@ -97,6 +115,40 @@ def _migrate_legacy() -> None:
             print(f"[warn] 配置迁移失败: {e}")
 
 
+def _normalize_apps(raw) -> list[dict]:
+    """把「监听哪些应用」清洗成 [{key, name, match}]。
+
+    match 全是小写，空项丢弃；整项没有有效匹配串的直接忽略，
+    否则会出现「勾了但永远匹配不到」的幽灵条目。
+    """
+    if not isinstance(raw, list):
+        return default_apps()
+
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        match = item.get("match")
+        if not isinstance(match, list):
+            match = [match] if match else []
+
+        pats: list[str] = []
+        for m in [name, *match]:
+            s = str(m or "").strip().lower()
+            if s and s not in pats:
+                pats.append(s)
+        if not pats:
+            continue
+
+        key = str(item.get("key") or pats[0]).strip() or pats[0]
+        out.append({"key": key, "name": name, "match": pats})
+
+    return out
+
+
 def normalize(cfg: dict) -> dict:
     """补齐缺失项并把数值夹到合法区间。"""
     out = dict(DEFAULT_CONFIG)
@@ -114,8 +166,28 @@ def normalize(cfg: dict) -> dict:
         out["theme"] = "dark"
     if out["position"] not in ("top-right", "top-left", "bottom-right", "bottom-left"):
         out["position"] = "top-right"
-    if not isinstance(out["ignore_sources"], list):
-        out["ignore_sources"] = []
+    if out["screen"] not in ("cursor", "primary"):
+        out["screen"] = "cursor"
+
+    # 免打扰列表：只保留非空字符串并去重（保持用户输入顺序）
+    raw_ignore = out.get("ignore_sources")
+    if not isinstance(raw_ignore, list):
+        raw_ignore = []
+    cleaned: list[str] = []
+    for item in raw_ignore:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if name and name not in cleaned:
+            cleaned.append(name)
+    out["ignore_sources"] = cleaned
+
+    out["autostart"] = bool(out.get("autostart", False))
+    out["merge_same_source"] = bool(out.get("merge_same_source", True))
+    out["show_content"] = bool(out.get("show_content", True))
+
+    # 监听范围：至少保留用户明确选择的集合，空列表表示「什么都不弹」
+    out["enabled_apps"] = _normalize_apps(out.get("enabled_apps"))
 
     # 头像目录留空时落到配置目录下的 avatars
     av = out.get("avatar_dir") or ""

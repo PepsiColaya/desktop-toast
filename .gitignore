@@ -17,6 +17,7 @@ dist/
 showcase.png
 *.log
 *.tmp
+tools/captures/
 
 # 运行时生成的用户配置（含本机路径，不入库）
 config.json

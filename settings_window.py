@@ -11,12 +11,16 @@ from PySide6.QtGui import (
     QColor, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QListView,
-    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListView,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider,
+    QVBoxLayout, QWidget,
 )
 
+import apps
+import autostart
 import config as cfgmod
 import logo
+import wechat
 from toast import Toast
 from watcher import WeChatMessage
 
@@ -29,7 +33,7 @@ STYLE = """
 QWidget { font-family: "Microsoft YaHei UI"; font-size: 13px; color: #22222A; }
 QGroupBox {
     border: 1px solid #E4E4EC; border-radius: 10px;
-    margin-top: 16px; padding: 14px 14px 10px 14px; background: #FFFFFF;
+    margin-top: 13px; padding: 12px 12px 8px 12px; background: #FFFFFF;
 }
 QGroupBox::title {
     subcontrol-origin: margin; left: 14px; padding: 0 5px;
@@ -91,6 +95,22 @@ QScrollBar::handle:vertical { background: #D6D6DE; border-radius: 4px; min-heigh
 QScrollBar::handle:vertical:hover { background: #BEBEC8; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QFrame#sep { background: #ECECF2; border: none; max-height: 1px; }
+QLineEdit {
+    border: 1px solid #DDDDE5; border-radius: 6px;
+    padding: 5px 9px; background: #FFFFFF; color: #22222A;
+    selection-background-color: #07C160; selection-color: #FFFFFF;
+}
+QLineEdit:focus { border-color: #07C160; }
+QListWidget {
+    border: 1px solid #E4E4EC; border-radius: 8px;
+    background: #FCFCFD; padding: 3px; outline: 0;
+}
+QListWidget::item {
+    min-height: 24px; padding-left: 6px; border-radius: 5px; color: #22222A;
+}
+QListWidget::item:hover { background: #F2FBF6; }
+QListWidget::item:selected { background: #E8F8EF; color: #07A050; }
+QPushButton#mini { padding: 5px 12px; font-size: 12px; }
 """
 
 
@@ -140,7 +160,7 @@ class SliderRow(QWidget):
         self._fmt = fmt
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 6)
+        lay.setContentsMargins(0, 0, 0, 3)
         lay.setSpacing(1)
 
         head = QHBoxLayout()
@@ -227,11 +247,13 @@ class SettingsWindow(QWidget):
         super().__init__()
         self._cfg = cfgmod.normalize(dict(cfg))
         self._loading = False
+        # 注册表里的真实状态，用于判断自启开关是否被改动过
+        self._autostart_state = autostart.is_enabled()
 
         self.setWindowTitle("微信消息提示 · 设置")
         self.setWindowIcon(logo.logo_icon())
         self.setMinimumSize(880, 560)
-        self.resize(940, 880)
+        self.resize(940, 950)
         self.setStyleSheet(STYLE)
 
         self._preview_timer = QTimer(self)
@@ -265,8 +287,10 @@ class SettingsWindow(QWidget):
         lv.setSpacing(4)
 
         lv.addWidget(self._build_appearance())
+        lv.addWidget(self._build_apps())
         lv.addWidget(self._build_position())
         lv.addWidget(self._build_behavior())
+        lv.addWidget(self._build_ignore())
         lv.addWidget(self._build_avatar())
         lv.addStretch(1)
 
@@ -278,6 +302,7 @@ class SettingsWindow(QWidget):
         # 允许纵向无限压缩，否则内容高度会把底部按钮挤出窗口
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         scroll.setMinimumHeight(180)
+        self.scroll = scroll
         body.addWidget(scroll)
 
         # ---- 右：预览区 ----
@@ -361,14 +386,79 @@ class SettingsWindow(QWidget):
 
         return box
 
+    def _build_apps(self) -> QGroupBox:
+        box = QGroupBox("监听应用")
+        lay = QVBoxLayout(box)
+        lay.setSpacing(5)
+
+        head = QHBoxLayout()
+        hint = QLabel("只提醒勾选的应用；一个都不勾就什么都不弹。")
+        hint.setObjectName("hint")
+        head.addWidget(hint, 1)
+        btn = QPushButton("刷新")
+        btn.setObjectName("mini")
+        btn.setToolTip("重新扫描当前正在运行的应用")
+        btn.clicked.connect(self._reload_apps)
+        head.addWidget(btn)
+        lay.addLayout(head)
+
+        self.lst_apps = QListWidget()
+        self.lst_apps.setFixedHeight(104)
+        self.lst_apps.itemChanged.connect(self._on_widget_change)
+        lay.addWidget(self.lst_apps)
+
+        return box
+
+    def _reload_apps(self):
+        """列出运行中的应用，并标出哪些在监听名单里。"""
+        enabled = list(self._cfg.get("enabled_apps", []))
+        running = apps.list_running_apps()
+
+        used: set[int] = set()
+        rows: list[tuple[dict, str, str, bool]] = []
+
+        for app in running:
+            hay = f"{app['exe']} {app['name']}".lower()
+            hit = None
+            for i, item in enumerate(enabled):
+                if i in used:
+                    continue
+                if any(p in hay for p in item.get("match", [])):
+                    hit = item
+                    used.add(i)
+                    break
+            record = hit or {
+                "key": app["exe"],
+                "name": app["name"],
+                "match": apps.match_patterns(app),
+            }
+            rows.append((record, app["name"], app["exe"], hit is not None))
+
+        # 名单里有、但当前没在跑的（比如微信没开）也要显示，否则会被误清掉
+        for i, item in enumerate(enabled):
+            if i not in used:
+                rows.append((item, item["name"], "未运行", True))
+
+        was_loading = self._loading
+        self._loading = True
+        self.lst_apps.clear()
+        for record, name, sub, checked in rows:
+            it = QListWidgetItem(f"{name}    {sub}")
+            it.setData(Qt.UserRole, record)
+            it.setToolTip(f"{name}\n匹配: {', '.join(record.get('match', []))}")
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+            self.lst_apps.addItem(it)
+        self._loading = was_loading
+
     def _build_position(self) -> QGroupBox:
         box = QGroupBox("位置")
         lay = QVBoxLayout(box)
         lay.setSpacing(2)
 
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(QLabel("显示位置"))
-        row.addStretch(1)
         self.cb_pos = QComboBox()
         for text, val in (("右上角", "top-right"), ("左上角", "top-left"),
                           ("右下角", "bottom-right"), ("左下角", "bottom-left")):
@@ -376,6 +466,16 @@ class SettingsWindow(QWidget):
         style_combo(self.cb_pos)
         self.cb_pos.currentIndexChanged.connect(self._on_widget_change)
         row.addWidget(self.cb_pos)
+
+        row.addSpacing(6)
+        row.addWidget(QLabel("屏幕"))
+        self.cb_screen = QComboBox()
+        self.cb_screen.addItem("跟随鼠标", "cursor")
+        self.cb_screen.addItem("主屏", "primary")
+        style_combo(self.cb_screen)
+        self.cb_screen.currentIndexChanged.connect(self._on_widget_change)
+        row.addWidget(self.cb_screen)
+        row.addStretch(1)
         lay.addLayout(row)
 
         self.sl_margin = SliderRow("距屏幕边缘", 6, 120, 22, lambda v: f"{v} px")
@@ -389,7 +489,7 @@ class SettingsWindow(QWidget):
         lay = QVBoxLayout(box)
         lay.setSpacing(2)
 
-        self.sl_duration = SliderRow("停留时长", 800, 12000, 3000, lambda v: f"{v/1000:.1f} 秒")
+        self.sl_duration = SliderRow("停留时长", 800, 20000, 3000, lambda v: f"{v/1000:.1f} 秒")
         self.sl_duration.changed.connect(self._on_widget_change)
         lay.addWidget(self.sl_duration)
 
@@ -405,7 +505,76 @@ class SettingsWindow(QWidget):
         self.chk_click.stateChanged.connect(self._on_widget_change)
         lay.addWidget(self.chk_click)
 
+        self.chk_merge = QCheckBox("同一会话连续消息合并成一张卡片")
+        self.chk_merge.stateChanged.connect(self._on_widget_change)
+        lay.addWidget(self.chk_merge)
+
+        self.chk_content = QCheckBox("卡片显示消息正文")
+        self.chk_content.setToolTip(
+            "取消勾选后，卡片只显示会话名和「有一条新消息」，"
+            "适合旁边有人时不想让内容被看到"
+        )
+        self.chk_content.stateChanged.connect(self._on_widget_change)
+        lay.addWidget(self.chk_content)
+
+        self.chk_autostart = QCheckBox("开机自动启动")
+        self.chk_autostart.stateChanged.connect(self._on_widget_change)
+        lay.addWidget(self.chk_autostart)
+
         return box
+
+    def _build_ignore(self) -> QGroupBox:
+        box = QGroupBox("免打扰")
+        lay = QVBoxLayout(box)
+        lay.setSpacing(5)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.ed_ignore = QLineEdit()
+        self.ed_ignore.setPlaceholderText("输入会话名后回车，该会话来消息不再弹卡片")
+        self.ed_ignore.setToolTip("名字要和微信里显示的完全一致（群名或备注名）")
+        self.ed_ignore.returnPressed.connect(self._add_ignore)
+        row.addWidget(self.ed_ignore, 1)
+
+        btn_add = QPushButton("添加")
+        btn_add.setObjectName("mini")
+        btn_add.clicked.connect(self._add_ignore)
+        row.addWidget(btn_add)
+        lay.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
+        self.lst_ignore = QListWidget()
+        self.lst_ignore.setFixedHeight(60)
+        self.lst_ignore.setSelectionMode(QListWidget.ExtendedSelection)
+        row2.addWidget(self.lst_ignore, 1)
+
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        btn_del = QPushButton("移除选中")
+        btn_del.setObjectName("mini")
+        btn_del.clicked.connect(self._remove_ignore)
+        col.addWidget(btn_del)
+        col.addStretch(1)
+        row2.addLayout(col)
+        lay.addLayout(row2)
+
+        return box
+
+    def _add_ignore(self):
+        name = self.ed_ignore.text().strip()
+        if not name:
+            return
+        existing = [self.lst_ignore.item(i).text() for i in range(self.lst_ignore.count())]
+        if name not in existing:
+            self.lst_ignore.addItem(QListWidgetItem(name))
+            self._on_widget_change()
+        self.ed_ignore.clear()
+
+    def _remove_ignore(self):
+        for item in self.lst_ignore.selectedItems():
+            self.lst_ignore.takeItem(self.lst_ignore.row(item))
+        self._on_widget_change()
 
     def _build_avatar(self) -> QGroupBox:
         box = QGroupBox("头像")
@@ -453,6 +622,8 @@ class SettingsWindow(QWidget):
         self.cb_theme.setCurrentIndex(max(0, idx))
         idx = self.cb_pos.findData(c["position"])
         self.cb_pos.setCurrentIndex(max(0, idx))
+        idx = self.cb_screen.findData(c["screen"])
+        self.cb_screen.setCurrentIndex(max(0, idx))
 
         self.sl_width.set_value(c["card_width"])
         self.sl_scale.set_value(round(c["scale"] * 100))
@@ -466,6 +637,16 @@ class SettingsWindow(QWidget):
 
         self.chk_hover.setChecked(bool(c["hover_pause"]))
         self.chk_click.setChecked(bool(c["click_to_open_wechat"]))
+        self.chk_merge.setChecked(bool(c["merge_same_source"]))
+        self.chk_content.setChecked(bool(c["show_content"]))
+        # 以注册表真实状态为准，避免配置与系统不一致时开关显示错误
+        self.chk_autostart.setChecked(self._autostart_state)
+
+        self.lst_ignore.clear()
+        for name in c.get("ignore_sources", []):
+            self.lst_ignore.addItem(QListWidgetItem(name))
+
+        self._reload_apps()
 
         path = c.get("avatar_dir", "")
         fm = QFontMetrics(self.lb_avatar_dir.font())
@@ -482,6 +663,7 @@ class SettingsWindow(QWidget):
         c = self._cfg
         c["theme"] = self.cb_theme.currentData()
         c["position"] = self.cb_pos.currentData()
+        c["screen"] = self.cb_screen.currentData()
         c["card_width"] = self.sl_width.value()
         c["scale"] = round(self.sl_scale.value() / 100, 2)
         c["radius"] = self.sl_radius.value()
@@ -493,6 +675,17 @@ class SettingsWindow(QWidget):
         c["max_visible"] = self.sl_max.value()
         c["hover_pause"] = self.chk_hover.isChecked()
         c["click_to_open_wechat"] = self.chk_click.isChecked()
+        c["merge_same_source"] = self.chk_merge.isChecked()
+        c["show_content"] = self.chk_content.isChecked()
+        c["autostart"] = self.chk_autostart.isChecked()
+        c["ignore_sources"] = [
+            self.lst_ignore.item(i).text() for i in range(self.lst_ignore.count())
+        ]
+        c["enabled_apps"] = [
+            self.lst_apps.item(i).data(Qt.UserRole)
+            for i in range(self.lst_apps.count())
+            if self.lst_apps.item(i).checkState() == Qt.Checked
+        ]
         self._cfg = cfgmod.normalize(c)
 
     def _on_widget_change(self, *_):
@@ -511,11 +704,27 @@ class SettingsWindow(QWidget):
     def _autosave(self):
         """把当前控件值写入配置文件并即时应用到运行中的程序。"""
         self._collect()
-        if cfgmod.save(self._cfg):
+        ok = cfgmod.save(self._cfg)
+
+        # 只有用户真的动了开关才去改注册表，避免每次自动保存都写一遍
+        want = bool(self._cfg.get("autostart"))
+        if want != self._autostart_state:
+            if autostart.set_enabled(want):
+                self._autostart_state = want
+            else:
+                ok = False
+                self._cfg["autostart"] = self._autostart_state
+                cfgmod.save(self._cfg)
+                self._loading = True
+                self.chk_autostart.setChecked(self._autostart_state)
+                self._loading = False
+                self.lb_saved.setText("开机自启设置失败，请检查权限")
+
+        if ok:
             self.applied.emit(dict(self._cfg))
             self.lb_saved.setText("已自动保存")
             QTimer.singleShot(1800, lambda: self.lb_saved.setText(""))
-        else:
+        elif "开机自启" not in self.lb_saved.text():
             self.lb_saved.setText("保存失败，请检查目录权限")
 
     def hideEvent(self, evt):
@@ -526,6 +735,8 @@ class SettingsWindow(QWidget):
             self._autosave()
 
     def show_window(self, cfg: Optional[dict] = None):
+        # 每次打开都重新读一次注册表，外部改动过也能显示正确状态
+        self._autostart_state = autostart.is_enabled()
         if cfg is not None:
             self._cfg = cfgmod.normalize(dict(cfg))
             self._load_from_cfg()
@@ -540,6 +751,24 @@ class SettingsWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+        # 列表控件拿到焦点会把面板滚到中间，这里回到顶部，保证每次打开都从头看
+        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(0))
+        # 从托盘/单实例唤起时本进程在后台，Windows 会拦住抢焦点。
+        # show() 之后窗口还没映射，必须等事件循环跑过一轮再置前，否则会被系统拒绝。
+        QTimer.singleShot(0, self._raise_to_front)
+        QTimer.singleShot(180, self._raise_to_front)
+
+    def _raise_to_front(self):
+        if not self.isVisible():
+            return
+        try:
+            self.raise_()
+            self.activateWindow()
+            wechat.force_foreground(int(self.winId()))
+        except Exception as e:
+            from logger import get
+
+            get("settings").debug("置前失败: %s", e)
 
     # ---------------- 预览渲染 ----------------
     def _refresh_preview(self):

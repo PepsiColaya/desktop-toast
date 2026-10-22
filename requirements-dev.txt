@@ -1,0 +1,9 @@
+# 只有 tools/ 下的诊断脚本需要，打 exe 不需要，别混进 requirements.txt
+-r requirements.txt
+
+uiautomation>=2.0
+Pillow>=10.0
+winrt-Windows.Media.Ocr>=3.0
+winrt-Windows.Graphics.Imaging>=3.0
+winrt-Windows.Storage.Streams>=3.0
+winrt-Windows.Globalization>=3.0

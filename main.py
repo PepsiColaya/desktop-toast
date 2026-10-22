@@ -6,14 +6,17 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+import autostart
 import config as cfgmod
+import logger
 import logo
 import wechat
 from settings_window import SettingsWindow
@@ -22,6 +25,8 @@ from watcher import WeChatMessage, WeChatWatcher
 
 APP_TITLE = "微信消息提示"
 SERVER_NAME = "WeChatToast.SingleInstance"
+
+log = logger.get("main")
 
 
 def make_tray_icon() -> QIcon:
@@ -53,18 +58,30 @@ def ensure_single_instance() -> bool:
 
 
 def main() -> int:
+    logger.setup()
+    logger.install_excepthook()
+    log.info("========== 启动 %s ==========", APP_TITLE)
+
     cfg = cfgmod.load()
+    log.info("配置目录: %s", cfgmod.config_dir())
 
     app = QApplication(sys.argv)
     app.setApplicationName(cfgmod.APP_NAME)
     app.setQuitOnLastWindowClosed(False)
 
     if not ensure_single_instance():
+        log.info("已有实例在运行，唤起它的设置窗口后退出")
         return 0
+
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        log.error("系统托盘不可用，无法常驻")
+        QMessageBox.critical(None, APP_TITLE, "当前系统托盘不可用，程序无法运行。")
+        return 1
 
     bridge = Bridge()
     state = {"paused": False}
     test_toasts: list[Toast] = []
+    watcher: WeChatWatcher | None = None
 
     manager = ToastManager(cfg, app, on_open_wechat=wechat.open_wechat)
     settings = SettingsWindow(cfg)
@@ -87,6 +104,9 @@ def main() -> int:
     act_pause = QAction("暂停监听", menu)
     menu.addAction(act_pause)
 
+    act_log = QAction("查看日志", menu)
+    menu.addAction(act_log)
+
     menu.addSeparator()
     act_quit = QAction("退出", menu)
     menu.addAction(act_quit)
@@ -99,19 +119,44 @@ def main() -> int:
         state["paused"] = not state["paused"]
         act_pause.setText("继续监听" if state["paused"] else "暂停监听")
         tray.setToolTip(f"{APP_TITLE} · {'已暂停' if state['paused'] else '运行中'}")
+        tray.showMessage(
+            APP_TITLE,
+            "已暂停，不再弹出新消息卡片" if state["paused"] else "已恢复监听",
+            QSystemTrayIcon.Information, 1500,
+        )
+        log.info("监听%s", "已暂停" if state["paused"] else "已恢复")
 
     act_pause.triggered.connect(toggle_pause)
 
+    def open_log():
+        path = logger.log_path()
+        try:
+            os.startfile(os.path.dirname(path))
+        except Exception as e:
+            log.warning("打开日志目录失败: %s", e)
+
+    act_log.triggered.connect(open_log)
+
     def quit_app():
-        watcher.stop()
+        log.info("用户请求退出")
+        if watcher is not None:
+            watcher.stop()
+        manager.close_all()
         app.quit()
 
     act_quit.triggered.connect(quit_app)
 
+    # 单击打开微信、双击打开设置：单击延迟一点，避免双击时先被当成单击
+    click_timer = QTimer()
+    click_timer.setSingleShot(True)
+    click_timer.setInterval(230)
+    click_timer.timeout.connect(wechat.open_wechat)
+
     def on_tray_activated(reason):
         if reason == QSystemTrayIcon.Trigger:          # 单击
-            wechat.open_wechat()
+            click_timer.start()
         elif reason == QSystemTrayIcon.DoubleClick:    # 双击
+            click_timer.stop()
             settings.show_window(cfgmod.load())
 
     tray.activated.connect(on_tray_activated)
@@ -121,6 +166,11 @@ def main() -> int:
         cfg.clear()
         cfg.update(new_cfg)
         manager.cfg = cfg
+        # 轮询间隔、免打扰名单改完立即生效，不必重启
+        if watcher is not None:
+            watcher.set_poll_interval(cfg.get("poll_interval_ms", 1000) / 1000.0)
+            watcher.set_ignore_sources(cfg.get("ignore_sources", []))
+            watcher.set_enabled_apps(cfg.get("enabled_apps", []))
 
     settings.applied.connect(apply_cfg)
 
@@ -149,7 +199,7 @@ def main() -> int:
     bridge.denied.connect(on_denied)
 
     def on_status(status: str):
-        print(f"[status] {status}")
+        log.info("监听状态: %s", status)
         if status == "access_denied":
             bridge.denied.emit()
 
@@ -158,6 +208,7 @@ def main() -> int:
         on_status=on_status,
         poll_interval=cfg.get("poll_interval_ms", 1000) / 1000.0,
         ignore_sources=cfg.get("ignore_sources", []),
+        enabled_apps=cfg.get("enabled_apps", []),
     )
     watcher.start()
 
@@ -178,13 +229,20 @@ def main() -> int:
 
         server.newConnection.connect(on_new_connection)
     except Exception as e:
-        print(f"[warn] 单实例服务启动失败: {e}")
+        log.warning("单实例服务启动失败: %s", e)
 
-    print(f"{APP_TITLE}已启动。右键托盘图标可进入设置或退出。")
+    # 配置里开了自启但注册表项丢了（重装、清理工具）时补一次
+    if cfg.get("autostart") and not autostart.is_enabled():
+        log.info("检测到开机自启已失效，正在重建")
+        autostart.set_enabled(True)
+
+    log.info("%s已启动。右键托盘图标可进入设置或退出。", APP_TITLE)
     code = app.exec()
-    watcher.stop()
+    if watcher is not None:
+        watcher.stop()
     if server is not None:
         server.close()
+    log.info("已退出，code=%s", code)
     return code
 
 
