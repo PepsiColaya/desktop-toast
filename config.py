@@ -7,7 +7,10 @@ import os
 import shutil
 import sys
 
-APP_NAME = "WeChatToast"
+APP_NAME = "DesktopToast"
+
+# 改名前的目录名。老用户升级时把整个目录搬过来，配置和日志都不用重设
+LEGACY_APP_NAME = "WeChatToast"
 
 
 def default_apps() -> list[dict]:
@@ -76,15 +79,47 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _rename_legacy_logs(target: str) -> None:
+    """把搬过来的旧日志文件改成新名字，免得目录里留着 wechat-toast.log 让人困惑。"""
+    for suffix in ("", ".1", ".2"):
+        old = os.path.join(target, f"wechat-toast.log{suffix}")
+        new = os.path.join(target, f"desktop-toast.log{suffix}")
+        if os.path.exists(old) and not os.path.exists(new):
+            try:
+                os.replace(old, new)
+            except Exception:
+                pass
+
+
+def _migrate_legacy_dir(root: str, target: str) -> None:
+    """把改名前的配置目录（%APPDATA%\\WeChatToast）整目录搬到新目录。"""
+    legacy = os.path.join(root, LEGACY_APP_NAME)
+    if os.path.isdir(target) or not os.path.isdir(legacy):
+        return
+    try:
+        shutil.move(legacy, target)
+    except Exception:
+        # 旧程序可能还开着，日志文件被占用，退一步只搬配置
+        try:
+            os.makedirs(target, exist_ok=True)
+            src = os.path.join(legacy, "config.json")
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(target, "config.json"))
+        except Exception:
+            pass
+    _rename_legacy_logs(target)
+
+
 def config_dir() -> str:
     """配置目录。
 
-    打包后固定放到 %APPDATA%\\WeChatToast，这样 exe 被移动、复制、重新下载都不会丢配置；
+    打包后固定放到 %APPDATA%\\DesktopToast，这样 exe 被移动、复制、重新下载都不会丢配置；
     源码运行时直接用项目目录，方便开发调试。
     """
     if getattr(sys, "frozen", False):
         root = os.environ.get("APPDATA") or os.path.expanduser("~")
-        d = os.path.join(root, "WeChatToast")
+        d = os.path.join(root, APP_NAME)
+        _migrate_legacy_dir(root, d)
     else:
         d = app_dir()
     os.makedirs(d, exist_ok=True)
@@ -100,7 +135,7 @@ def default_avatar_dir() -> str:
     return os.path.join(config_dir(), "avatars")
 
 
-def _migrate_legacy() -> None:
+def _migrate_exe_config() -> None:
     """旧版把 config.json 放在 exe 同目录，这里迁移到配置目录，避免用户配置丢失。"""
     if not getattr(sys, "frozen", False):
         return
@@ -214,7 +249,7 @@ def _for_file(cfg: dict) -> dict:
 
 
 def load() -> dict:
-    _migrate_legacy()
+    _migrate_exe_config()
     path = config_path()
     if not os.path.exists(path):
         cfg = normalize(dict(DEFAULT_CONFIG))

@@ -1,12 +1,17 @@
-# 微信消息提示 · WeChatToast
+# DesktopToast · 桌面通知悬浮提示
 
 [![release](https://img.shields.io/github/v/release/PepsiColaya/desktop-toast)](https://github.com/PepsiColaya/desktop-toast/releases/latest)
 [![license](https://img.shields.io/github/license/PepsiColaya/desktop-toast)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://github.com/PepsiColaya/desktop-toast)
 
-> 微信躲在后台时，也能一眼看到**谁发的、说了什么**。
+> 应用躲在后台时，也能一眼看到**谁发的、说了什么**。
 
 > **第三方工具声明**：本项目为个人作品，与腾讯公司无关，未获其授权或认可。「微信」仅用于说明本工具适用的软件，不构成任何官方关联。程序只读取 Windows 通知中心，不修改、不注入微信客户端。图标为原创设计（靛蓝卡片造型），未使用微信官方标识。
+
+> **关于改名**：本项目原名 `WeChatToast`，为了不再把适用范围限定在微信上，现已统一改为 `DesktopToast`。
+> 老用户升级时，`%APPDATA%\WeChatToast` 会在首次启动时自动搬到 `%APPDATA%\DesktopToast`，配置和日志都不用重设；
+> 旧的开机自启项也会被自动清理。新旧版本的单实例名不同，理论上可以同时运行（不建议）。
+
 
 ![预览](docs/screenshot.png)
 
@@ -26,7 +31,7 @@ PC 微信最小化后，来消息只有任务栏闪一下，不看一眼根本�
 - **免打扰名单**：不想被某几个群打扰时，在设置里把它们加进去即可，改完即时生效
 - **开机自启**：设置里勾一下即可，写当前用户的启动项，不需要管理员权限
 - **可视化调参**：内置设置面板，左侧拖滑块，右侧实时预览，所见即所得
-- **配置永久保存**：改完自动落盘到 `%APPDATA%\WeChatToast\config.json`，重启、换 exe 位置都不会丢
+- **配置永久保存**：改完自动落盘到 `%APPDATA%\DesktopToast\config.json`，重启、换 exe 位置都不会丢
 - **深色 / 浅色主题**，宽度、缩放、圆角、阴影、透明度、位置、时长全部可调
 - **托盘常驻**：支持暂停监听、单实例保护
 - **日志可查**：运行日志写在配置目录下，托盘菜单「查看日志」一键打开，出问题能直接定位
@@ -126,7 +131,7 @@ PC 微信最小化后，来消息只有任务栏闪一下，不看一眼根本�
 
 ### 方式一：直接跑 exe
 
-从 [Releases](https://github.com/PepsiColaya/desktop-toast/releases/latest) 下载 `WeChatToast.exe` 双击运行。托盘出现靛蓝色的卡片图标就是启动成功了，**没有主窗口是正常的**。
+从 [Releases](https://github.com/PepsiColaya/desktop-toast/releases/latest) 下载 `DesktopToast.exe` 双击运行。托盘出现靛蓝色的卡片图标就是启动成功了，**没有主窗口是正常的**。
 
 首次启动单文件 exe 需要解压，会等 3～8 秒。
 
@@ -173,12 +178,12 @@ python main.py
 
 ## 日志
 
-运行日志写在配置目录下的 `wechat-toast.log`（超过 512 KB 自动滚动，最多保留 3 份）：
+运行日志写在配置目录下的 `desktop-toast.log`（超过 512 KB 自动滚动，最多保留 3 份）：
 
 | 运行方式 | 位置 |
 |---|---|
-| exe | `%APPDATA%\WeChatToast\wechat-toast.log` |
-| 源码 | 项目根目录 `wechat-toast.log` |
+| exe | `%APPDATA%\DesktopToast\desktop-toast.log` |
+| 源码 | 项目根目录 `desktop-toast.log` |
 
 托盘菜单 → **查看日志** 会直接打开所在目录。反馈问题时带上这个文件即可。
 
@@ -199,7 +204,7 @@ python main.py
 
 | 运行方式 | 位置 |
 |---|---|
-| exe | `%APPDATA%\WeChatToast\config.json` |
+| exe | `%APPDATA%\DesktopToast\config.json` |
 | 源码 | 项目根目录 `config.json` |
 
 放在 `%APPDATA%` 的好处是：exe 被移动、复制、重新下载覆盖，配置都还在。旧版本留在 exe 同目录的 `config.json` 会在首次启动时自动迁移过来。
@@ -247,7 +252,7 @@ python main.py
 
 微信 4.x 的通知里**不带头像**，本地头像缓存又是哈希命名、无法对应到会话名，所以程序不会自动抓取头像。
 
-替代方案是「按名字匹配」：把头像图片命名成会话名，放进头像目录即可（默认 `%APPDATA%\WeChatToast\avatars`，设置面板里点「打开目录」可直接跳过去）。
+替代方案是「按名字匹配」：把头像图片命名成会话名，放进头像目录即可（默认 `%APPDATA%\DesktopToast\avatars`，设置面板里点「打开目录」可直接跳过去）。
 
 ```
 avatars/
@@ -294,10 +299,10 @@ desktop-toast/
 build.bat
 ```
 
-脚本会自动装依赖再调 PyInstaller，产物在 `dist/WeChatToast.exe`，约 40 MB（PySide6 占大头）。
+脚本会自动装依赖再调 PyInstaller，产物在 `dist/DesktopToast.exe`，约 40 MB（PySide6 占大头）。
 打包只用 `requirements.txt`，`requirements-dev.txt` 里的诊断依赖不会进 exe。
 
-用户端的配置和日志都在 `%APPDATA%\WeChatToast\` 下，exe 可以随便移动、复制、重新下载。
+用户端的配置和日志都在 `%APPDATA%\DesktopToast\` 下，exe 可以随便移动、复制、重新下载。
 
 ## 已知限制
 

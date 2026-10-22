@@ -250,7 +250,7 @@ class SettingsWindow(QWidget):
         # 注册表里的真实状态，用于判断自启开关是否被改动过
         self._autostart_state = autostart.is_enabled()
 
-        self.setWindowTitle("微信消息提示 · 设置")
+        self.setWindowTitle("DesktopToast · 设置")
         self.setWindowIcon(logo.logo_icon())
         self.setMinimumSize(880, 560)
         self.resize(940, 950)

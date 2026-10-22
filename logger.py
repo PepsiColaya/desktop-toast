@@ -2,7 +2,7 @@
 """统一日志：同时写控制台和配置文件目录下的日志文件。
 
 打包成 --noconsole 的 exe 后没有控制台，出问题时用户什么也看不到。
-这里把日志落到 `%APPDATA%\\WeChatToast\\wechat-toast.log`（滚动保留 2 份），
+这里把日志落到 `%APPDATA%\\DesktopToast\\desktop-toast.log`（滚动保留 2 份），
 用户只要把文件发过来就能定位问题。
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 
-_ROOT = "wechattoast"
+_ROOT = "desktop_toast"
 _ready = False
 
 
@@ -20,7 +20,7 @@ def log_path() -> str:
     # 延迟导入，避免 config <-> logger 循环依赖
     import config as cfgmod
 
-    return os.path.join(cfgmod.config_dir(), "wechat-toast.log")
+    return os.path.join(cfgmod.config_dir(), "desktop-toast.log")
 
 
 def setup(level: int = logging.INFO) -> logging.Logger:

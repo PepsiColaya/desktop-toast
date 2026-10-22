@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""微信消息悬浮提示 —— 程序入口。
+"""DesktopToast —— 桌面通知悬浮提示，程序入口。
 
-微信隐藏在后台时来消息，屏幕角落浮出卡片显示「谁发的 + 说了什么」，
+应用隐藏在后台时来了通知，屏幕角落浮出卡片显示「哪个应用 + 谁发的 + 说了什么」，
 默认 3 秒淡出。支持可视化调参、系统托盘常驻。
 """
 from __future__ import annotations
@@ -23,8 +23,8 @@ from settings_window import SettingsWindow
 from toast import Toast, ToastManager
 from watcher import WeChatMessage, WeChatWatcher
 
-APP_TITLE = "微信消息提示"
-SERVER_NAME = "WeChatToast.SingleInstance"
+APP_TITLE = "DesktopToast"
+SERVER_NAME = "DesktopToast.SingleInstance"
 
 log = logger.get("main")
 
@@ -231,8 +231,17 @@ def main() -> int:
     except Exception as e:
         log.warning("单实例服务启动失败: %s", e)
 
+    # 改名迁移：旧版注册的是 WeChatToast，路径指向旧 exe。
+    # 只靠下面的 is_enabled() 判断会以为「自启已开」，结果开机起来的还是旧程序。
+    if autostart.has_legacy():
+        if cfg.get("autostart"):
+            autostart.migrate_legacy()
+            log.info("开机自启项已从 WeChatToast 迁移到 DesktopToast")
+        else:
+            autostart.set_enabled(False)
+            log.info("已清理改名前的旧开机自启项")
     # 配置里开了自启但注册表项丢了（重装、清理工具）时补一次
-    if cfg.get("autostart") and not autostart.is_enabled():
+    elif cfg.get("autostart") and not autostart.is_enabled():
         log.info("检测到开机自启已失效，正在重建")
         autostart.set_enabled(True)
 

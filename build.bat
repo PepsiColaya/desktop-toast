@@ -13,7 +13,7 @@ if errorlevel 1 goto fail
 
 echo [2/2] 打包 exe...
 "%PY%" -m PyInstaller --noconfirm --clean --onefile --noconsole ^
-  --name WeChatToast ^
+  --name DesktopToast ^
   --icon icon.ico ^
   --collect-submodules winrt ^
   --hidden-import winrt.windows.applicationmodel ^
@@ -22,9 +22,9 @@ echo [2/2] 打包 exe...
   main.py
 if errorlevel 1 goto fail
 
-rem 配置在 %APPDATA%\WeChatToast 下，不用往 dist 里拷 config.json
+rem 配置在 %APPDATA%\DesktopToast 下，不用往 dist 里拷 config.json
 echo.
-echo 打包完成: dist\WeChatToast.exe
+echo 打包完成: dist\DesktopToast.exe
 pause
 exit /b 0
 

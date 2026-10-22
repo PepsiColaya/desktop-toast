@@ -205,12 +205,64 @@ def test_toast(app: QApplication) -> None:
     t2.deleteLater()
 
 
+def test_migrate() -> None:
+    """改名迁移：旧配置目录要能整目录搬过来。
+
+    这里除了验行为，还顺便防一类隐蔽 bug：函数重名会静默覆盖前一个定义，
+    单元测试不碰的话要等打出来的 exe 启动时才炸。
+    """
+    import shutil
+    import tempfile
+
+    print("[迁移] 改名前的配置目录搬迁")
+
+    check("APP_NAME 是新名字", cfgmod.APP_NAME, "DesktopToast")
+    check("旧名字有登记", bool(cfgmod.LEGACY_APP_NAME), True)
+
+    root = tempfile.mkdtemp()
+    try:
+        legacy = os.path.join(root, cfgmod.LEGACY_APP_NAME)
+        os.makedirs(legacy)
+        with open(os.path.join(legacy, "config.json"), "w", encoding="utf-8") as f:
+            f.write('{"theme": "light"}')
+        with open(os.path.join(legacy, "wechat-toast.log"), "w", encoding="utf-8") as f:
+            f.write("old")
+
+        target = os.path.join(root, cfgmod.APP_NAME)
+        cfgmod._migrate_legacy_dir(root, target)
+
+        check("新目录已生成", os.path.isdir(target), True)
+        check("旧目录已消失", os.path.isdir(legacy), False)
+        check(
+            "配置跟过来了",
+            os.path.exists(os.path.join(target, "config.json")),
+            True,
+        )
+        check(
+            "日志改成新名字",
+            os.path.exists(os.path.join(target, "desktop-toast.log")),
+            True,
+        )
+        check(
+            "旧日志名不再存在",
+            os.path.exists(os.path.join(target, "wechat-toast.log")),
+            False,
+        )
+
+        # 新目录已存在时不能再搬，避免覆盖用户现在的配置
+        cfgmod._migrate_legacy_dir(root, target)
+        check("重复调用不出错", os.path.isdir(target), True)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     test_parse()
     test_wrap()
     test_multi_app()
     test_config()
+    test_migrate()
     test_toast(app)
 
     print()

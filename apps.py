@@ -30,7 +30,8 @@ SKIP_EXES = {
     "ctfmon.exe",
     "dwm.exe",
     "conhost.exe",
-    "wechattoast.exe",
+    "desktoptoast.exe",          # 程序自己
+    "wechattoast.exe",           # 改名前的旧 exe，可能还留着
     "runtimebroker.exe",
     "widgets.exe",
     "lockapp.exe",
