@@ -1,8 +1,8 @@
 # 微信消息提示 · WeChatToast
 
-[![release](https://img.shields.io/github/v/release/PepsiColaya/wechat-notifier)](https://github.com/PepsiColaya/wechat-notifier/releases/latest)
-[![license](https://img.shields.io/github/license/PepsiColaya/wechat-notifier)](LICENSE)
-[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://github.com/PepsiColaya/wechat-notifier)
+[![release](https://img.shields.io/github/v/release/PepsiColaya/desktop-toast)](https://github.com/PepsiColaya/desktop-toast/releases/latest)
+[![license](https://img.shields.io/github/license/PepsiColaya/desktop-toast)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://github.com/PepsiColaya/desktop-toast)
 
 > 微信躲在后台时，也能一眼看到**谁发的、说了什么**。
 
@@ -126,15 +126,15 @@ PC 微信最小化后，来消息只有任务栏闪一下，不看一眼根本�
 
 ### 方式一：直接跑 exe
 
-从 [Releases](https://github.com/PepsiColaya/wechat-notifier/releases/latest) 下载 `WeChatToast.exe` 双击运行。托盘出现靛蓝色的卡片图标就是启动成功了，**没有主窗口是正常的**。
+从 [Releases](https://github.com/PepsiColaya/desktop-toast/releases/latest) 下载 `WeChatToast.exe` 双击运行。托盘出现靛蓝色的卡片图标就是启动成功了，**没有主窗口是正常的**。
 
 首次启动单文件 exe 需要解压，会等 3～8 秒。
 
 ### 方式二：源码运行
 
 ```bash
-git clone https://github.com/PepsiColaya/wechat-notifier.git
-cd wechat-notifier
+git clone https://github.com/PepsiColaya/desktop-toast.git
+cd desktop-toast
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -266,7 +266,7 @@ avatars/
 ## 项目结构
 
 ```
-wechat-notifier/
+desktop-toast/
 ├── main.py              # 入口：托盘、单实例、信号桥接
 ├── config.py            # 配置默认值、读写、范围校验、自动迁移
 ├── logger.py            # 日志：文件 + 控制台，含全局异常钩子
