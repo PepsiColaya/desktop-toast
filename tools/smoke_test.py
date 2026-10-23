@@ -10,8 +10,11 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+ROOT = Path(__file__).resolve().parent.parent
 
 from PySide6.QtGui import QFont, QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -19,7 +22,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import config as cfgmod  # noqa: E402
 import guide  # noqa: E402
 import apps  # noqa: E402
-from settings_window import tooltip_html  # noqa: E402
+from settings_window import STYLE, tooltip_html  # noqa: E402
 from toast import Toast, ToastManager, wrap_text  # noqa: E402
 from watcher import WeChatMessage, WeChatWatcher, parse_notification  # noqa: E402
 
@@ -340,10 +343,20 @@ def test_guide() -> None:
 def test_tooltip() -> None:
     print("[提示框] 透明祖先污染调色板的回归")
 
-    # 设置面板左侧滚动区为了露出窗口底色，给内容容器设了 background: transparent。
-    # Qt 的 QSS 有个怪癖：祖先一旦设透明背景，子孙控件的 Window/Base/Button
-    # 会被染成黑色，原生提示框继承后整块透明、文字变黑，深色桌面上完全看不见。
-    # 只能靠把颜色写进富文本救回来，这里锁住这个行为。
+    # 早期为了露出窗口底色，给左侧滚动区和内容容器设了 background: transparent。
+    # Qt 的 QSS 怪癖：祖先一旦设透明背景，子孙控件的 Window/Base/Button 全被染成
+    # 黑色，原生提示框继承后整块变黑；后来改成富文本 div 只盖住文字块，
+    # 标签自带的几像素内容边距仍露黑边，表现为「悬浮框两边有黑框」。
+    # 最终方案：左栏彻底不设透明背景 + QToolTip QSS 规则 + 富文本 div 双保险。
+    # 这里从源码层面锁死，不许透明背景再回来。
+
+    src = (ROOT / "settings_window.py").read_text(encoding="utf-8")
+    check("左栏容器不再设透明背景",
+          'setStyleSheet("background: transparent;")' not in src, True)
+    check("滚动区规则不带透明背景",
+          "QScrollArea { border: none; }" in STYLE, True)
+    check("提示框有 QToolTip 配色规则",
+          "QToolTip {" in STYLE and "background-color: #FFFFFF" in STYLE, True)
 
     html = tooltip_html("手机连接", "标识：Microsoft.YourPhone_8wekyb3d8bbwe!App")
     check("带背景色", "background-color:#FFFFFF" in html, True)

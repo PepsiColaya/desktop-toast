@@ -33,8 +33,12 @@ PREVIEW_MSGS = [
 
 STYLE = """
 QWidget { font-family: "Microsoft YaHei UI"; font-size: 13px; color: #22222A; }
-/* 提示框底色见下面的 tooltip_html()：QSS 管不到原生提示框的调色板，
-   必须把颜色写进富文本里才生效 */
+/* 提示框双保险：QToolTip 规则管标签自身（含边距），
+   富文本 div 管文字块，见 tooltip_html() 的说明 */
+QToolTip {
+    background-color: #FFFFFF; color: #22222A;
+    border: 1px solid #DDDDE0; padding: 6px;
+}
 QGroupBox {
     border: 1px solid #E4E4EC; border-radius: 10px;
     margin-top: 13px; padding: 12px 12px 8px 12px; background: #FFFFFF;
@@ -93,7 +97,7 @@ QPushButton#primary {
 QPushButton#primary:hover { background: #06AD56; }
 QPushButton#ghost { border: none; background: transparent; color: #7A7A86; }
 QPushButton#ghost:hover { color: #07A050; }
-QScrollArea { border: none; background: transparent; }
+QScrollArea { border: none; }
 QScrollBar:vertical { width: 8px; background: transparent; }
 QScrollBar::handle:vertical { background: #D6D6DE; border-radius: 4px; min-height: 30px; }
 QScrollBar::handle:vertical:hover { background: #BEBEC8; }
@@ -144,16 +148,18 @@ TOOLTIP_FG = "#22222A"
 def tooltip_html(*lines: str) -> str:
     """把提示文字包成带底色的富文本。
 
-    为什么要绕这一圈：左侧滚动区为了露出窗口底色，给内容容器设了
-    ``background: transparent``。Qt 的 QSS 有个怪癖——祖先控件一旦设了
-    透明背景，会把子孙控件的调色板 Window / Base / Button 全染成黑色，
-    原生提示框标签继承这份调色板后，整块变透明、文字变黑，
-    在深色桌面上就是「黑的啥也看不见」。
+    提示框的最终配色由两处共同保证，缺一不可：
 
-    调色板修不回去（setPalette 会被重新抛光覆盖），QSS 的 QToolTip
-    规则也压不过它。唯一稳的办法是把背景和文字色直接写进富文本，
-    让 QLabel 自己画，完全不看调色板。用 <div> 而不是 <span>，
-    因为只有块级元素才会铺出背景块。
+    1. STYLE 里的 ``QToolTip`` 规则——管提示标签本体，
+       包括标签自带的几像素内容边距（早期只有富文本时，
+       边距位置会露出被染黑的调色板，表现为「两边有黑框」）。
+    2. 这里的富文本 ``<div>``——管文字块本身。
+       QTipLabel 的调色板会被所在控件污染（左栏曾经因为
+       ``background: transparent`` 把 Window/Base 全染成黑色），
+       一旦 QSS 的 background 在某处失效，div 自带的白底
+       还能兜住文字，不至于整块变黑。
+
+    用 <div> 而不是 <span>，因为只有块级元素才会铺出背景块。
     """
     from html import escape
 
@@ -313,8 +319,12 @@ class SettingsWindow(QWidget):
         body.setSpacing(16)
 
         # ---- 左：参数区 ----
+        # 注意：这里不能给 left_inner 设 background: transparent。
+        # Qt 的 QSS 一旦在祖先上设透明背景，会把子孙控件的调色板
+        # Window / Base / Button 全染成黑色，悬浮提示框继承后整块变黑，
+        # 富文本只能盖住文字块，标签自带的 3px 左右边距还是会露黑边。
+        # 不设背景时容器默认继承窗口的浅灰色底色，视觉效果一样。
         left_inner = QWidget()
-        left_inner.setStyleSheet("background: transparent;")
         lv = QVBoxLayout(left_inner)
         lv.setContentsMargins(0, 0, 8, 0)
         lv.setSpacing(4)
