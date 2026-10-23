@@ -58,6 +58,8 @@ DEFAULT_CONFIG: dict = {
     "app_names": {},
     # ---- 启动 ----
     "autostart": False,              # 开机自启（写 HKCU Run 注册表项）
+    # ---- 设置面板布局 ----
+    "left_width": 540,               # 设置窗口左栏宽度，中间分割线可拖
 }
 
 # 数值型配置的合法区间，读取和保存时都会夹紧
@@ -74,6 +76,7 @@ RANGES: dict = {
     "fade_in_ms": (0, 1000),
     "fade_out_ms": (0, 1000),
     "poll_interval_ms": (400, 5000),
+    "left_width": (340, 900),
 }
 
 

@@ -179,6 +179,12 @@ def test_config() -> None:
 
     check("空名单保留为空", cfgmod.normalize({"enabled_apps": []})["enabled_apps"], [])
 
+    # 设置面板左栏宽度（中间分割线位置）
+    check("左栏宽度默认", cfgmod.DEFAULT_CONFIG["left_width"], 540)
+    check("左栏宽度夹紧上限", cfgmod.normalize({"left_width": 5000})["left_width"], 900)
+    check("左栏宽度夹紧下限", cfgmod.normalize({"left_width": 10})["left_width"], 340)
+    check("左栏宽度透传", cfgmod.normalize({"left_width": 620})["left_width"], 620)
+
 
 def test_toast(app: QApplication) -> None:
     print("[卡片] 渲染尺寸与同会话合并")

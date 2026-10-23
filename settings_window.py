@@ -13,7 +13,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListView,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider,
-    QVBoxLayout, QWidget,
+    QSplitter, QVBoxLayout, QWidget,
 )
 
 import apps
@@ -119,6 +119,12 @@ QListWidget::item {
 QListWidget::item:hover { background: #F2FBF6; }
 QListWidget::item:selected { background: #E8F8EF; color: #07A050; }
 QPushButton#mini { padding: 5px 12px; font-size: 12px; }
+/* 中间分割线：平时是浅灰细线，悬停变绿提示可以抓；
+   宽度 3px 是抓取热区，太细会很难对准 */
+QSplitter::handle:horizontal {
+    background-color: #DCDCE6; width: 3px;
+}
+QSplitter::handle:horizontal:hover { background-color: #07C160; }
 """
 
 
@@ -241,7 +247,8 @@ class PreviewPane(QWidget):
     def __init__(self):
         super().__init__()
         self._pix: Optional[QPixmap] = None
-        self.setMinimumSize(430, 480)
+        # 最小值别太大：用户把左栏拖宽后，右侧至少还要留这么大看预览
+        self.setMinimumSize(340, 420)
 
     def set_pixmap(self, pix: QPixmap):
         self._pix = pix
@@ -291,8 +298,8 @@ class SettingsWindow(QWidget):
 
         self.setWindowTitle("DesktopToast · 设置")
         self.setWindowIcon(logo.logo_icon())
-        self.setMinimumSize(880, 560)
-        self.resize(940, 950)
+        self.setMinimumSize(900, 560)
+        self.resize(1080, 950)
         self.setStyleSheet(STYLE)
 
         self._preview_timer = QTimer(self)
@@ -318,6 +325,13 @@ class SettingsWindow(QWidget):
         body.setContentsMargins(16, 8, 16, 0)
         body.setSpacing(16)
 
+        # ---- 左右分栏：中间分割线可拖动，左栏宽度记入配置 ----
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(3)
+        splitter.setChildrenCollapsible(False)   # 不许把一侧拖到消失
+        self.splitter = splitter
+        splitter.splitterMoved.connect(self._on_splitter_moved)
+
         # ---- 左：参数区 ----
         # 注意：这里不能给 left_inner 设 background: transparent。
         # Qt 的 QSS 一旦在祖先上设透明背景，会把子孙控件的调色板
@@ -341,24 +355,33 @@ class SettingsWindow(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(left_inner)
-        scroll.setFixedWidth(452)
+        scroll.setMinimumWidth(340)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # 允许纵向无限压缩，否则内容高度会把底部按钮挤出窗口
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         scroll.setMinimumHeight(180)
         self.scroll = scroll
-        body.addWidget(scroll)
+        splitter.addWidget(scroll)
 
         # ---- 右：预览区 ----
-        right = QVBoxLayout()
-        right.setSpacing(8)
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(8)
         cap = QLabel("实时预览")
         cap.setObjectName("hint")
-        right.addWidget(cap)
+        rv.addWidget(cap)
         self.preview = PreviewPane()
         self.preview.resized.connect(lambda: self._preview_timer.start(60))
-        right.addWidget(self.preview, 1)
-        body.addLayout(right, 1)
+        rv.addWidget(self.preview, 1)
+        splitter.addWidget(right)
+
+        # 默认左栏宽一点；窗口变大时多出的宽度只加给预览，左栏保持用户拖好的宽度
+        splitter.setSizes([int(self._cfg.get("left_width", 540)), 10 ** 6])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+
+        body.addWidget(splitter, 1)
 
         root.addLayout(body, 1)
 
@@ -853,6 +876,10 @@ class SettingsWindow(QWidget):
         self._reload_apps()
         self._refresh_phonelink()
 
+        # 中间分割线位置：左栏多宽由用户上次拖出来的位置决定
+        if hasattr(self, "splitter"):
+            self.splitter.setSizes([int(c.get("left_width", 540)), 10 ** 6])
+
         path = c.get("avatar_dir", "")
         fm = QFontMetrics(self.lb_avatar_dir.font())
         self.lb_avatar_dir.setText(fm.elidedText(path, Qt.ElideMiddle, 230))
@@ -891,6 +918,9 @@ class SettingsWindow(QWidget):
             for i in range(self.lst_apps.count())
             if self.lst_apps.item(i).checkState() == Qt.Checked
         ]
+        # 中间分割线位置，存的是左栏宽度
+        if hasattr(self, "splitter"):
+            c["left_width"] = self.splitter.sizes()[0]
         self._cfg = cfgmod.normalize(c)
 
     def _on_widget_change(self, *_):
@@ -900,6 +930,13 @@ class SettingsWindow(QWidget):
         self._update_apps_hint()
         self._preview_timer.start(90)       # 防抖，拖动滑块时不至于卡
         self._autosave_timer.start(500)     # 停手半秒后自动落盘
+
+    def _on_splitter_moved(self, *_):
+        """拖动中间分割线：只记宽度和刷预览，不碰其它配置。"""
+        if self._loading:
+            return
+        self._preview_timer.start(90)
+        self._autosave_timer.start(500)
 
     def _reset(self):
         self._cfg = dict(cfgmod.DEFAULT_CONFIG)
@@ -947,11 +984,14 @@ class SettingsWindow(QWidget):
             self._cfg = cfgmod.normalize(dict(cfg))
             self._load_from_cfg()
 
-        # 小屏幕上把窗口压到可用高度内，内容区自带滚动条
+        # 小屏幕上把窗口压到可用区域内，内容区自带滚动条
         screen = QGuiApplication.primaryScreen().availableGeometry()
         max_h = screen.height() - 60
         if self.height() > max_h:
             self.resize(self.width(), max_h)
+        max_w = screen.width() - 40
+        if self.width() > max_w:
+            self.resize(max_w, self.height())
 
         self._refresh_preview()
         self.show()
