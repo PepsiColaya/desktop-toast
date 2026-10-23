@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import config as cfgmod  # noqa: E402
 import guide  # noqa: E402
 import apps  # noqa: E402
+from settings_window import tooltip_html  # noqa: E402
 from toast import Toast, ToastManager, wrap_text  # noqa: E402
 from watcher import WeChatMessage, WeChatWatcher, parse_notification  # noqa: E402
 
@@ -336,6 +337,33 @@ def test_guide() -> None:
         check(f"{st} 结构完整", h.startswith("<!DOCTYPE html>") and h.rstrip().endswith("</html>"), True)
 
 
+def test_tooltip() -> None:
+    print("[提示框] 透明祖先污染调色板的回归")
+
+    # 设置面板左侧滚动区为了露出窗口底色，给内容容器设了 background: transparent。
+    # Qt 的 QSS 有个怪癖：祖先一旦设透明背景，子孙控件的 Window/Base/Button
+    # 会被染成黑色，原生提示框继承后整块透明、文字变黑，深色桌面上完全看不见。
+    # 只能靠把颜色写进富文本救回来，这里锁住这个行为。
+
+    html = tooltip_html("手机连接", "标识：Microsoft.YourPhone_8wekyb3d8bbwe!App")
+    check("带背景色", "background-color:#FFFFFF" in html, True)
+    check("带文字色", "color:#22222A" in html, True)
+    check("用 div 块级元素", html.startswith("<div style="), True)
+    check("多行用 br 分隔", html.count("<br>") == 1, True)
+
+    # 空内容不该产出空壳标签
+    check("空行被忽略", tooltip_html("", None) == "", True)
+
+    # HTML 特殊字符必须转义，否则应用名里带 < > & 会把富文本解析坏
+    esc = tooltip_html("a<b>&c")
+    check("转义小于号", "&lt;" in esc, True)
+    check("转义与号", "&amp;" in esc, True)
+    check("不残留裸标签", "<b>" not in esc, True)
+
+    # 用 span 不铺背景块，必须是 div
+    check("不是 span", "<span" not in html, True)
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     test_parse()
@@ -344,6 +372,7 @@ def main() -> int:
     test_config()
     test_apps()
     test_guide()
+    test_tooltip()
     test_migrate()
     test_toast(app)
 

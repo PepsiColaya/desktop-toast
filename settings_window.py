@@ -33,6 +33,8 @@ PREVIEW_MSGS = [
 
 STYLE = """
 QWidget { font-family: "Microsoft YaHei UI"; font-size: 13px; color: #22222A; }
+/* 提示框底色见下面的 tooltip_html()：QSS 管不到原生提示框的调色板，
+   必须把颜色写进富文本里才生效 */
 QGroupBox {
     border: 1px solid #E4E4EC; border-radius: 10px;
     margin-top: 13px; padding: 12px 12px 8px 12px; background: #FFFFFF;
@@ -133,6 +135,35 @@ QListView::item {
 QListView::item:hover { background-color: #F2FBF6; color: #07A050; }
 QListView::item:selected { background-color: #E8F8EF; color: #07A050; }
 """
+
+#: 提示框的固定配色，和面板保持一致
+TOOLTIP_BG = "#FFFFFF"
+TOOLTIP_FG = "#22222A"
+
+
+def tooltip_html(*lines: str) -> str:
+    """把提示文字包成带底色的富文本。
+
+    为什么要绕这一圈：左侧滚动区为了露出窗口底色，给内容容器设了
+    ``background: transparent``。Qt 的 QSS 有个怪癖——祖先控件一旦设了
+    透明背景，会把子孙控件的调色板 Window / Base / Button 全染成黑色，
+    原生提示框标签继承这份调色板后，整块变透明、文字变黑，
+    在深色桌面上就是「黑的啥也看不见」。
+
+    调色板修不回去（setPalette 会被重新抛光覆盖），QSS 的 QToolTip
+    规则也压不过它。唯一稳的办法是把背景和文字色直接写进富文本，
+    让 QLabel 自己画，完全不看调色板。用 <div> 而不是 <span>，
+    因为只有块级元素才会铺出背景块。
+    """
+    from html import escape
+
+    body = "<br>".join(escape(l) for l in lines if l)
+    if not body:
+        return ""
+    return (
+        f'<div style="background-color:{TOOLTIP_BG};color:{TOOLTIP_FG};">'
+        f"{body}</div>"
+    )
 
 
 def style_combo(combo: QComboBox) -> None:
@@ -400,7 +431,7 @@ class SettingsWindow(QWidget):
         head.addWidget(hint, 1)
         btn = QPushButton("刷新")
         btn.setObjectName("mini")
-        btn.setToolTip("重新读取本机通知设置里的应用名单")
+        btn.setToolTip(tooltip_html("重新读取本机通知设置里的应用名单"))
         btn.clicked.connect(self._reload_apps)
         head.addWidget(btn)
         lay.addLayout(head)
@@ -470,9 +501,10 @@ class SettingsWindow(QWidget):
         for record, name, sub, checked in rows:
             it = QListWidgetItem(name)
             it.setData(Qt.UserRole, record)
-            it.setToolTip(
-                f"{name}\n标识：{sub}\n匹配关键字：{', '.join(record.get('match', []))}"
-            )
+            it.setToolTip(tooltip_html(
+                name,
+                f"标识：{sub}",
+            ))
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Checked if checked else Qt.Unchecked)
             self.lst_apps.addItem(it)
@@ -657,10 +689,10 @@ class SettingsWindow(QWidget):
         lay.addWidget(self.chk_merge)
 
         self.chk_content = QCheckBox("卡片显示消息正文")
-        self.chk_content.setToolTip(
+        self.chk_content.setToolTip(tooltip_html(
             "取消勾选后，卡片只显示会话名和「有一条新消息」，"
             "适合旁边有人时不想让内容被看到"
-        )
+        ))
         self.chk_content.stateChanged.connect(self._on_widget_change)
         lay.addWidget(self.chk_content)
 
@@ -679,10 +711,10 @@ class SettingsWindow(QWidget):
         row.setSpacing(6)
         self.ed_ignore = QLineEdit()
         self.ed_ignore.setPlaceholderText("填会话名后回车，该会话来消息不再弹卡片")
-        self.ed_ignore.setToolTip(
-            "手机连接转发的微信消息：填手机微信里的群名或备注名\n"
-            "其他应用：填通知的第一行标题"
-        )
+        self.ed_ignore.setToolTip(tooltip_html(
+            "手机连接转发的微信消息：填手机微信里的群名或备注名",
+            "其他应用：填通知的第一行标题",
+        ))
         self.ed_ignore.returnPressed.connect(self._add_ignore)
         row.addWidget(self.ed_ignore, 1)
 
@@ -814,11 +846,11 @@ class SettingsWindow(QWidget):
         path = c.get("avatar_dir", "")
         fm = QFontMetrics(self.lb_avatar_dir.font())
         self.lb_avatar_dir.setText(fm.elidedText(path, Qt.ElideMiddle, 230))
-        self.lb_avatar_dir.setToolTip(path)
+        self.lb_avatar_dir.setToolTip(tooltip_html(path))
 
         cfgp = cfgmod.config_path()
         self.lb_cfg_path.setText("配置：" + fm.elidedText(cfgp, Qt.ElideMiddle, 240))
-        self.lb_cfg_path.setToolTip("配置自动保存在：\n" + cfgp)
+        self.lb_cfg_path.setToolTip(tooltip_html(f"配置自动保存在：{cfgp}"))
 
         self._loading = False
 
