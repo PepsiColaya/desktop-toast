@@ -17,9 +17,13 @@ dist/
 showcase.png
 *.log
 *.tmp
+tools/captures/
 
 # 运行时生成的用户配置（含本机路径，不入库）
 config.json
+
+# 设置面板「查看连接配置教程」按钮生成的本地教程
+手机连接配置教程.html
 
 # 图标生成的中间产物
 icon_256.png

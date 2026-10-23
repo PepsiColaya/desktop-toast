@@ -35,15 +35,15 @@ def _window_title(hwnd: int) -> str:
 def find_wechat_window() -> int:
     """返回微信主窗口句柄；找不到返回 0。
 
-    微信 4.x 会创建多个 Weixin.exe 顶层窗口，优先取标题为「微信」且可见的那个。
+    微信 4.x 的进程名是 Weixin.exe，3.9.x 是 WeChat.exe，两个都认；
+    同名进程会创建多个顶层窗口，优先取标题为「微信」且可见的那个。
     """
     candidates: list[tuple[int, bool, str]] = []
-    result = [0]
 
     def cb(hwnd, _lparam):
         pid = ctypes.c_ulong()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if not _process_exe(pid.value).endswith("weixin.exe"):
+        if not _process_exe(pid.value).endswith(("weixin.exe", "wechat.exe")):
             return True
         title = _window_title(hwnd)
         if title not in ("微信", "Weixin", "WeChat"):
@@ -59,12 +59,17 @@ def find_wechat_window() -> int:
 
     # 可见的「微信」优先，其次任意可见窗口，最后兜底
     candidates.sort(key=lambda c: (c[2] == "微信", c[1]), reverse=True)
-    result[0] = candidates[0][0]
-    return result[0]
+    return candidates[0][0]
 
 
-def _force_foreground(hwnd: int) -> None:
-    """绕过 Windows 的前台窗口限制，尽量把窗口拉到最前。"""
+def force_foreground(hwnd: int) -> None:
+    """绕过 Windows 的前台窗口限制，尽量把窗口拉到最前。
+
+    后台进程直接调 SetForegroundWindow 会被系统拒绝（前台锁），
+    这里先把自己的线程输入挂到当前前台窗口的线程上，再抢焦点。
+    """
+    if not hwnd:
+        return
     fg = user32.GetForegroundWindow()
     cur_tid = kernel32.GetCurrentThreadId()
     fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
@@ -81,6 +86,10 @@ def _force_foreground(hwnd: int) -> None:
             user32.AttachThreadInput(fg_tid, cur_tid, False)
 
 
+# 兼容旧调用名
+_force_foreground = force_foreground
+
+
 def open_wechat() -> bool:
     """把微信唤到前台。成功返回 True。"""
     hwnd = find_wechat_window()
@@ -88,7 +97,7 @@ def open_wechat() -> bool:
         if not user32.IsWindowVisible(hwnd):
             user32.ShowWindow(hwnd, SW_SHOW)
         user32.ShowWindow(hwnd, SW_RESTORE)
-        _force_foreground(hwnd)
+        force_foreground(hwnd)
         return True
 
     # 微信没在运行：走自定义协议启动

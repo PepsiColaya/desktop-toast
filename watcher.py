@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""监听 Windows 通知中心，捕获微信新消息。
+"""监听 Windows 通知中心，捕获微信（以及用户勾选的其他应用）的新消息。
 
-微信 4.x 是 Qt 自绘渲染，UIA 控件树为空，无法直接读取会话列表；
-但微信会把新消息推送到 Windows 通知中心，这里通过
-UserNotificationListener 读取，无需注入微信进程、无需读取数据库。
+通过 UserNotificationListener 读取通知中心的 Toast，不注入微信进程、不读数据库。
+
+注意：这条路只对「会把消息推送到 Windows 通知中心」的应用有效。
+微信 4.x 属于不推送的那一类（实测它的通知处理器数为 0），
+具体原因和可选的替代方案见 README 的「微信 4.x 收不到消息」一节。
+
+监听哪些应用由 config 的 enabled_apps 决定，默认只有微信。
 """
 from __future__ import annotations
 
@@ -21,23 +25,50 @@ from winrt.windows.ui.notifications.management import (
     UserNotificationListenerAccessStatus,
 )
 
-WECHAT_TITLES = ("微信", "wechat")
+from logger import get
 
-# 群消息格式为 "发送者 : 内容"，发送者名字通常很短
-SENDER_SPLIT = re.compile(r"^(.{1,24}?)\s*[:：]\s*(.+)$", re.S)
+# 微信在不同版本/语言下的应用名与标识里都可能出现这些词
+WECHAT_TITLES = ("微信", "wechat", "weixin")
+
+# 「手机连接」（Phone Link）把手机上的通知转发到电脑时，所有 App 共用同一个 AUMID
+# 和显示名，真实来源只写在通知首行。命中这些特征时要把首行一起纳入匹配。
+PHONE_LINK_HINTS = ("microsoft.yourphone", "手机连接", "phone link")
+
+# 群消息格式为「发送者 : 内容」，冒号后面带空格。
+# 这里要求冒号后必须有空白，是为了避开单聊正文里常见的中文冒号：
+# 「会议时间：明天下午三点」不该被拆成 发送者=会议时间。
+SENDER_SPLIT = re.compile(r"^(.{1,20}?)\s*[:：]\s+(.+)$", re.S)
+
+# 发送者名里出现这些标点基本可以确定是正文，不是人名
+SENDER_REJECT = set("，。！？；、,。!?;")
+
+log = get("watcher")
+
+_APPINFO_WARNED = False
 
 
 @dataclass
 class WeChatMessage:
-    source: str          # 会话名（群名 / 联系人）
-    sender: str          # 群消息的发送者，单聊时为空
+    source: str          # 会话名（微信）/ 通知标题（其他应用）
+    sender: str          # 群消息的发送者，单聊和其他应用为空
     content: str         # 消息正文
     received_at: float
     notif_id: int
+    app: str = ""        # 来源应用显示名，如「微信」「Microsoft Store」
+
+    @property
+    def is_wechat(self) -> bool:
+        hay = f"{self.app} {self.source}".lower()
+        return any(t in hay for t in WECHAT_TITLES)
 
     @property
     def display_title(self) -> str:
-        return f"{self.source} · {self.sender}" if self.sender else self.source
+        if self.sender:
+            return f"{self.source} · {self.sender}"
+        # 非微信应用把应用名带出来，否则光看标题不知道是谁发的
+        if self.app and not self.is_wechat:
+            return f"{self.app} · {self.source}"
+        return self.source
 
 
 def _extract_texts(notif) -> list[str]:
@@ -60,21 +91,87 @@ def _extract_texts(notif) -> list[str]:
         return []
 
 
-def parse_wechat(texts: list[str], notif_id: int) -> Optional[WeChatMessage]:
-    """把微信 Toast 的文本行解析成消息对象；非微信通知返回 None。"""
-    if len(texts) < 2:
-        return None
-    if not texts[0].lower().startswith(WECHAT_TITLES):
+def app_identity(notif) -> tuple[str, str]:
+    """取通知所属应用的 (AUMID, 显示名)。
+
+    需要 winrt-Windows.ApplicationModel 投影包；缺了就返回空，
+    调用方会退回「看第一行是不是微信」的旧规则。
+    """
+    global _APPINFO_WARNED
+
+    try:
+        info = notif.app_info
+    except Exception as e:
+        # 只提醒一次，避免每秒刷一条日志
+        if not _APPINFO_WARNED:
+            _APPINFO_WARNED = True
+            log.warning(
+                "读不到通知的应用标识（%s），只能靠首行猜来源应用，多应用监听可能失效", e
+            )
+        return "", ""
+    if info is None:
+        return "", ""
+
+    aumid = name = ""
+    try:
+        aumid = (info.app_user_model_id or "").strip()
+    except Exception:
+        pass
+    try:
+        display = info.display_info
+        if display is not None:
+            name = (display.display_name or "").strip()
+    except Exception:
+        pass
+    return aumid, name
+
+
+def _looks_like_wechat(*fields: str) -> bool:
+    hay = " ".join(f for f in fields if f).lower()
+    return any(t in hay for t in WECHAT_TITLES)
+
+
+def _appinfo_available() -> bool:
+    """打包后确认 ApplicationModel 投影模块在不在，缺了多应用监听会退化成只认微信。"""
+    try:
+        import winrt.windows.applicationmodel  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def parse_notification(texts: list[str], notif_id: int,
+                       app_name: str = "") -> Optional[WeChatMessage]:
+    """把一条 Toast 的文本行解析成消息对象；解析不出来返回 None。
+
+    微信是「应用名 / 会话名 / 发送者 : 正文」三段式，
+    其他应用是「标题 / 正文」两段式，这里分开处理。
+    """
+    if not texts:
         return None
 
-    source = texts[1]
-    body = texts[2] if len(texts) > 2 else ""
+    if _looks_like_wechat(app_name) or _looks_like_wechat(texts[0]):
+        return _parse_wechat(texts, notif_id, app_name)
+    return _parse_generic(texts, notif_id, app_name)
+
+
+def _parse_wechat(texts: list[str], notif_id: int, app_name: str) -> Optional[WeChatMessage]:
+    if len(texts) < 2:
+        return None
+
+    # 正常情况第一行是「微信」；如果 app_info 已经确认是微信但首行是别的，就整体前移
+    offset = 1 if _looks_like_wechat(texts[0]) else 0
+    source = texts[offset] if len(texts) > offset else ""
+    body = texts[offset + 1] if len(texts) > offset + 1 else ""
     sender = ""
 
     if body:
         m = SENDER_SPLIT.match(body)
         if m:
-            sender, body = m.group(1).strip(), m.group(2).strip()
+            candidate = m.group(1).strip()
+            # 名字里不该出现句读标点，出现了说明整行都是正文
+            if candidate and not (SENDER_REJECT & set(candidate)):
+                sender, body = candidate, m.group(2).strip()
 
     return WeChatMessage(
         source=source,
@@ -82,6 +179,21 @@ def parse_wechat(texts: list[str], notif_id: int) -> Optional[WeChatMessage]:
         content=body,
         received_at=time.time(),
         notif_id=notif_id,
+        app=app_name or "微信",
+    )
+
+
+def _parse_generic(texts: list[str], notif_id: int, app_name: str) -> Optional[WeChatMessage]:
+    source = texts[0]
+    content = "\n".join(t for t in texts[1:] if t)
+
+    return WeChatMessage(
+        source=source,
+        sender="",
+        content=content,
+        received_at=time.time(),
+        notif_id=notif_id,
+        app=app_name or source,
     )
 
 
@@ -95,15 +207,21 @@ class WeChatWatcher:
         poll_interval: float = 1.0,
         dedup_window: float = 4.0,
         ignore_sources: Optional[list[str]] = None,
+        enabled_apps: Optional[list[dict]] = None,
+        on_app_learned: Optional[Callable[[str, str], None]] = None,
     ):
         self._on_message = on_message
         self._on_status = on_status or (lambda s: None)
         self._poll_interval = poll_interval
         self._dedup_window = dedup_window
         self._ignore_sources = set(ignore_sources or [])
+        self._enabled_apps: list[dict] = list(enabled_apps or [])
+        # 学到新的 AUMID -> 显示名 时回调，供设置界面把英文名换成中文名
+        self._on_app_learned = on_app_learned
 
         self._seen: OrderedDict[int, str] = OrderedDict()
         self._recent: OrderedDict[str, float] = OrderedDict()
+        self._learned: dict[str, str] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -114,6 +232,66 @@ class WeChatWatcher:
 
     def stop(self) -> None:
         self._stop.set()
+
+    # ---------- 运行期热更新（设置面板改完立即生效，不必重启） ----------
+    def set_poll_interval(self, seconds: float) -> None:
+        self._poll_interval = max(0.2, float(seconds))
+
+    def set_ignore_sources(self, names: list[str]) -> None:
+        self._ignore_sources = {str(n).strip() for n in (names or []) if str(n).strip()}
+
+    def set_enabled_apps(self, apps: list[dict]) -> None:
+        self._enabled_apps = list(apps or [])
+        log.info("监听应用已更新: %s",
+                 "、".join(a.get("name", "?") for a in self._enabled_apps) or "（无）")
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    # ---------- 应用过滤 ----------
+    def app_enabled(self, aumid: str, app_name: str, texts: list[str]) -> bool:
+        """这条通知的来源应用是否在监听范围内。
+
+        只在 AUMID / 显示名里匹配，不拿正文去匹配，
+        否则正文里出现「微信」两个字就会被误判。
+        """
+        if not self._enabled_apps:
+            return False
+
+        hay = " ".join(x for x in (aumid, app_name) if x).lower()
+
+        # 手机连接转发：AUMID 和显示名都是「手机连接」，光看这两个字段分不出是微信
+        # 还是别的 App，真实来源在首行（微信 / 快捷指令 / TestFlight…），所以把首行也纳入。
+        # 首行是应用名或标题，不是正文，不会把正文里的关键词误当成应用。
+        if texts and any(h in hay for h in PHONE_LINK_HINTS):
+            hay = f"{hay} {texts[0].lower()}".strip()
+
+        if not hay:
+            # 拿不到应用标识时退回旧规则：只看第一行是不是微信
+            hay = (texts[0] if texts else "").lower()
+
+        for app in self._enabled_apps:
+            for pat in app.get("match", []):
+                if pat and pat in hay:
+                    return True
+        return False
+
+    # ---------- 主循环 ----------
+    def _learn_app_name(self, aumid: str, app_name: str) -> None:
+        """记住 AUMID 对应的系统显示名，设置界面就能显示中文名而不是进程名。
+
+        只在第一次见到某个 AUMID 时回调，避免每次轮询都触发保存。
+        """
+        if not aumid or not app_name:
+            return
+        if self._learned.get(aumid) == app_name:
+            return
+        self._learned[aumid] = app_name
+        if self._on_app_learned is not None:
+            try:
+                self._on_app_learned(aumid, app_name)
+            except Exception as e:
+                log.debug("应用名学习回调失败: %s", e)
 
     def _thread_main(self) -> None:
         loop = asyncio.new_event_loop()
@@ -126,36 +304,45 @@ class WeChatWatcher:
             except Exception:
                 pass
 
-    # ---------- 主循环 ----------
     async def _run(self) -> None:
         listener = UserNotificationListener.current
         status = listener.get_access_status()
 
         if status != UserNotificationListenerAccessStatus.ALLOWED:
             self._on_status("requesting_access")
+            log.info("尚未获得通知访问权限，正在请求…")
             status = await listener.request_access_async()
 
         if status != UserNotificationListenerAccessStatus.ALLOWED:
+            log.warning("通知访问被拒绝（status=%s）", status)
             self._on_status("access_denied")
             return
 
         self._on_status("watching")
+        log.info("通知监听已启动，轮询间隔 %.2fs", self._poll_interval)
+        log.info("应用标识读取: %s", "可用" if _appinfo_available() else "不可用（只能识别微信）")
 
         # 首次读取只建立基线，避免把历史通知全部弹出来
         try:
             for n in await listener.get_notifications_async(NotificationKinds.TOAST):
                 self._seen[n.id] = "|".join(_extract_texts(n))
-        except Exception:
-            pass
+            log.info("基线建立完成，已有 %d 条通知", len(self._seen))
+        except Exception as e:
+            log.warning("建立通知基线失败: %s", e)
 
+        fail_count = 0
         while not self._stop.is_set():
             try:
                 notifs = await listener.get_notifications_async(NotificationKinds.TOAST)
+                fail_count = 0
                 for n in notifs:
                     self._handle(n)
-            except Exception:
-                # 通知服务偶发不可用，忽略并继续
-                pass
+            except Exception as e:
+                # 通知服务偶发不可用（微信重启、系统通知服务抖动），忽略并继续。
+                # 连续失败才记一条，避免日志被刷爆。
+                fail_count += 1
+                if fail_count == 1 or fail_count % 60 == 0:
+                    log.warning("读取通知中心失败（第 %d 次）: %s", fail_count, e)
             await asyncio.sleep(self._poll_interval)
 
     def _handle(self, n) -> None:
@@ -175,18 +362,28 @@ class WeChatWatcher:
         if previous == signature:
             return
 
-        msg = parse_wechat(texts, n.id)
+        aumid, app_name = app_identity(n)
+        self._learn_app_name(aumid, app_name)
+        if not self.app_enabled(aumid, app_name, texts):
+            log.debug("应用不在监听范围，已跳过: aumid=%r name=%r text0=%r",
+                      aumid, app_name, texts[0])
+            return
+
+        msg = parse_notification(texts, n.id, app_name or aumid)
         if msg is None:
             return
         if msg.source in self._ignore_sources:
+            log.debug("免打扰会话，已跳过: %s", msg.source)
             return
         if self._is_duplicate(msg):
+            log.debug("重复消息，已跳过: %s", msg.display_title)
             return
 
+        log.info("收到消息 [%s] %s", msg.display_title, msg.content[:60])
         self._on_message(msg)
 
     def _is_duplicate(self, msg: WeChatMessage) -> bool:
-        key = f"{msg.source}|{msg.sender}|{msg.content}"
+        key = f"{msg.app}|{msg.source}|{msg.sender}|{msg.content}"
         now = time.time()
 
         # 清掉过期的去重记录

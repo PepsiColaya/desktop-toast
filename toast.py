@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import deque
 from typing import Callable, Optional
 
@@ -10,7 +11,7 @@ from PySide6.QtCore import (
     QEasingCurve, QObject, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter,
+    QAction, QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter,
     QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QWidget
@@ -45,6 +46,9 @@ AVATAR_GRADIENTS = [
 ]
 
 AVATAR_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+# 折行用的切分单位：显式换行 / 英文单词 / 连续空白 / 其余单字符（中文按字断行）
+_TOKEN_RE = re.compile(r"\n|[A-Za-z0-9][A-Za-z0-9'’\-_.@:/]*|[ \t]+|.", re.S)
 
 _avatar_cache: dict = {}
 
@@ -85,39 +89,71 @@ def load_avatar(name: str, avatar_dir: str) -> Optional[QPixmap]:
     return None
 
 
+def _wrap_all(text: str, fm: QFontMetrics, max_width: int) -> list[str]:
+    """把整段文字折成若干行，不做行数限制。"""
+    lines: list[str] = []
+    cur = ""
+
+    def flush() -> None:
+        nonlocal cur
+        lines.append(cur)
+        cur = ""
+
+    for tok in _TOKEN_RE.findall(text):
+        if tok == "\n":
+            flush()
+            continue
+        if not cur and not tok.strip():
+            continue                                   # 行首空白不占位
+        if fm.horizontalAdvance(cur + tok) <= max_width:
+            cur += tok
+            continue
+
+        if cur:                                        # 当前行放不下，换行
+            flush()
+            tok = tok.lstrip()
+            if not tok:
+                continue
+            if fm.horizontalAdvance(tok) <= max_width:
+                cur = tok
+                continue
+
+        # 单个 token 比整行还宽（超长英文串 / 链接），退化成逐字符硬切
+        for ch in tok:
+            if cur and fm.horizontalAdvance(cur + ch) > max_width:
+                flush()
+            cur += ch
+
+    flush()
+    return lines
+
+
 def wrap_text(text: str, fm: QFontMetrics, max_width: int, max_lines: int = 2) -> list[str]:
-    """按像素宽度折行，超出 max_lines 时最后一行加省略号。"""
+    """按像素宽度折行，超出 max_lines 时最后一行加省略号。
+
+    英文按单词断开（不会把 hello 拆成 hel/lo），中文按字断开。
+    """
+    max_width = max(20, int(max_width))
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
         return ["（新消息）"]
 
-    lines: list[str] = []
-    cur = ""
-    for ch in text:
-        if ch == "\n":
-            lines.append(cur)
-            cur = ""
-            if len(lines) >= max_lines:
-                break
-            continue
-        if cur and fm.horizontalAdvance(cur + ch) > max_width:
-            lines.append(cur)
-            cur = ch
-            if len(lines) >= max_lines:
-                break
-        else:
-            cur += ch
-    if len(lines) < max_lines:
-        lines.append(cur)
+    lines = [ln.rstrip() for ln in _wrap_all(text, fm, max_width)]
+    while lines and not lines[-1]:
+        lines.pop()
+    while lines and not lines[0]:
+        lines.pop(0)
+    if not lines:
+        return ["（新消息）"]
+    if len(lines) <= max_lines:
+        return lines
 
-    consumed = sum(len(x) for x in lines)
-    if consumed < len(text.replace("\n", "")):
-        tail = lines[-1]
-        while tail and fm.horizontalAdvance(tail + "…") > max_width:
-            tail = tail[:-1]
-        lines[-1] = tail + "…"
-
-    return [x for x in lines if x != ""] or [""]
+    out = lines[:max_lines]
+    tail = out[-1]
+    while tail and fm.horizontalAdvance(tail + "…") > max_width:
+        tail = tail[:-1]
+    out[-1] = tail.rstrip() + "…"
+    return out
 
 
 class Toast(QWidget):
@@ -135,6 +171,7 @@ class Toast(QWidget):
 
         self._hovering = False
         self._closing = False
+        self._count = 1
         self._anims: list = []
 
         # ---- 由配置推导尺寸 ----
@@ -171,41 +208,12 @@ class Toast(QWidget):
         self.f_avatar.setWeight(QFont.Bold)
 
         # ---- 排版 ----
-        text_x = self.pad + self.avatar + self.text_gap
-        text_w = self.card_w - text_x - self.pad
+        self.text_x = self.pad + self.avatar + self.text_gap
+        self.text_w = max(20, self.card_w - self.text_x - self.pad)
 
-        fm_title = QFontMetrics(self.f_title)
-        fm_body = QFontMetrics(self.f_body)
-
-        self.title_text = fm_title.elidedText(msg.display_title, Qt.ElideRight, max(20, text_w))
-        self.body_lines = wrap_text(msg.content, fm_body, max(20, text_w), max_lines=2)
-
-        self.card_h = self.pad * 2 + self.title_h + self.title_gap + len(self.body_lines) * self.line_h
-        self.card_h = max(self.card_h, self.pad * 2 + self.avatar)
-
-        self.resize(self.card_w + self.shadow * 2, self.card_h + self.shadow * 2)
-
-        # ---- 文字控件（绝对定位，坐标需加阴影留白）----
-        s = self.shadow
-        self.lb_title = QLabel(self)
-        self.lb_title.setText(self.title_text)
-        self.lb_title.setFont(self.f_title)
-        self.lb_title.setStyleSheet(f"color: {self.theme['title']}; background: transparent;")
-        self.lb_title.setGeometry(s + text_x, s + self.pad, text_w, self.title_h)
-
-        self.lb_body = QLabel(self)
-        self.lb_body.setText("\n".join(self.body_lines))
-        self.lb_body.setFont(self.f_body)
-        self.lb_body.setStyleSheet(f"color: {self.theme['body']}; background: transparent;")
-        self.lb_body.setGeometry(
-            s + text_x, s + self.pad + self.title_h + self.title_gap,
-            text_w, len(self.body_lines) * self.line_h,
-        )
-
-        for lb in (self.lb_title, self.lb_body):
-            lb.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            lb.setContentsMargins(0, 0, 0, 0)
-            lb.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._apply_text()
+        self._build_labels()
+        self._apply_geometry()
 
         # ---- 动画 ----
         self.setWindowOpacity(0.0)
@@ -213,6 +221,75 @@ class Toast(QWidget):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.fade_out)
+
+    # ---------- 排版计算 ----------
+    def _apply_text(self) -> None:
+        """根据当前消息与合并条数，算出标题、正文行与卡片高度。"""
+        title = self.msg.display_title
+        if self._count > 1:
+            title = f"{title}（{self._count}）"
+
+        fm_title = QFontMetrics(self.f_title)
+        self.title_text = fm_title.elidedText(title, Qt.ElideRight, self.text_w)
+
+        # 关掉「显示详细消息」时，正文只留一句占位，避免别人一眼看到内容
+        content = self.msg.content
+        if not self.cfg.get("show_content", True):
+            content = "有一条新消息"
+        self.body_lines = wrap_text(content, QFontMetrics(self.f_body),
+                                    self.text_w, max_lines=2)
+
+        self.card_h = (self.pad * 2 + self.title_h + self.title_gap
+                       + len(self.body_lines) * self.line_h)
+        self.card_h = max(self.card_h, self.pad * 2 + self.avatar)
+
+    def _build_labels(self) -> None:
+        self.lb_title = QLabel(self)
+        self.lb_title.setFont(self.f_title)
+        self.lb_title.setStyleSheet(f"color: {self.theme['title']}; background: transparent;")
+
+        self.lb_body = QLabel(self)
+        self.lb_body.setFont(self.f_body)
+        self.lb_body.setStyleSheet(f"color: {self.theme['body']}; background: transparent;")
+
+        for lb in (self.lb_title, self.lb_body):
+            lb.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            lb.setContentsMargins(0, 0, 0, 0)
+            lb.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        self._sync_labels()
+
+    def _sync_labels(self) -> None:
+        self.lb_title.setText(self.title_text)
+        self.lb_body.setText("\n".join(self.body_lines))
+
+    def _apply_geometry(self) -> None:
+        """尺寸变化后重排窗口与文字控件（坐标需加上阴影留白）。"""
+        s = self.shadow
+        self.resize(self.card_w + s * 2, self.card_h + s * 2)
+        self.lb_title.setGeometry(s + self.text_x, s + self.pad, self.text_w, self.title_h)
+        self.lb_body.setGeometry(
+            s + self.text_x, s + self.pad + self.title_h + self.title_gap,
+            self.text_w, len(self.body_lines) * self.line_h,
+        )
+
+    def update_message(self, msg: WeChatMessage) -> bool:
+        """同一会话来了新消息：原地更新内容并累加条数，避免刷屏。"""
+        if self._closing:
+            return False
+        self.msg = msg
+        self._count += 1
+        self._apply_text()
+        self._sync_labels()
+        self._apply_geometry()
+        self.update()
+        if not self._hovering:
+            self._restart_timer()
+        return True
+
+    @property
+    def is_closing(self) -> bool:
+        return self._closing
 
     @property
     def bg_opacity(self) -> float:
@@ -374,6 +451,14 @@ class ToastManager(QObject):
 
     # ---------- 消息 ----------
     def push(self, msg: WeChatMessage):
+        # 同一会话还在屏幕上：直接更新那张卡，不新增一条
+        if self.cfg.get("merge_same_source", True):
+            for toast in self.active:
+                if toast.msg.source == msg.source and not toast.is_closing:
+                    toast.update_message(msg)
+                    self._relayout()
+                    return
+
         if len(self.active) >= int(self.cfg.get("max_visible", 3)):
             self.pending.append(msg)
             return
@@ -383,8 +468,8 @@ class ToastManager(QObject):
         toast = Toast(msg, self.cfg, on_open_wechat=self.on_open_wechat)
         toast.closed.connect(self._on_closed)
         self.active.insert(0, toast)      # 最新的排最前
+        self._relayout()                  # 先摆到目标屏幕，避免在副屏用户眼前闪一下主屏
         toast.appear()
-        self._relayout()
 
     def _on_closed(self, toast):
         if toast in self.active:
@@ -401,9 +486,23 @@ class ToastManager(QObject):
         self.pending.clear()
 
     # ---------- 布局 ----------
+    def _target_screen(self):
+        """按配置挑选屏幕：默认跟随鼠标，多屏办公时卡片不会跑到另一块屏上。"""
+        if self.cfg.get("screen", "cursor") == "cursor":
+            scr = QGuiApplication.screenAt(QCursor.pos())
+            if scr is not None:
+                return scr
+        scr = QGuiApplication.primaryScreen()
+        if scr is not None:
+            return scr
+        screens = QGuiApplication.screens()
+        return screens[0] if screens else None
+
     def _relayout(self):
         """按卡片的视觉尺寸排布，阴影留白不计入间距。"""
-        screen = QGuiApplication.primaryScreen()
+        screen = self._target_screen()
+        if screen is None:
+            return
         geo: QRect = screen.availableGeometry()
         margin = int(self.cfg.get("margin", 22))
         gap = int(self.cfg.get("gap", 8))

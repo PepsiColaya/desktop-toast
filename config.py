@@ -7,7 +7,24 @@ import os
 import shutil
 import sys
 
-APP_NAME = "WeChatToast"
+APP_NAME = "DesktopToast"
+
+# 改名前的目录名。老用户升级时把整个目录搬过来，配置和日志都不用重设
+LEGACY_APP_NAME = "WeChatToast"
+
+
+def default_apps() -> list[dict]:
+    """默认只监听微信。
+
+    match 是一组小写子串，用来和通知里的 AUMID / 显示名做包含匹配。
+    微信各版本的应用标识不统一（微信 / WeChat / Weixin / Tencent.WeChat），
+    所以多放几个别名，避免换个版本就收不到。
+
+    PC 微信自己不往消息中心发通知，微信消息实际是「手机连接」转发过来的，
+    转发的通知首行就是「微信」，靠这个别名一样能匹配上（见 watcher.app_enabled）。
+    """
+    return [{"key": "wechat", "name": "微信", "match": ["微信", "wechat", "weixin"]}]
+
 
 DEFAULT_CONFIG: dict = {
     # ---- 外观 ----
@@ -22,6 +39,7 @@ DEFAULT_CONFIG: dict = {
     # ---- 位置 ----
     "position": "top-right",         # top-right / top-left / bottom-right / bottom-left
     "margin": 22,                    # 距屏幕边缘 px
+    "screen": "cursor",              # cursor=跟随鼠标所在屏幕，primary=主屏
     # ---- 行为 ----
     "duration_ms": 3000,             # 停留时长
     "max_visible": 3,                # 同屏最多几张
@@ -29,9 +47,17 @@ DEFAULT_CONFIG: dict = {
     "fade_out_ms": 280,
     "hover_pause": True,             # 鼠标悬停时暂停倒计时
     "click_to_open_wechat": True,
+    "merge_same_source": True,       # 同一会话连续消息合并成一张卡片
+    "show_content": True,            # 卡片是否显示消息正文；关掉只显示「有一条新消息」
     "poll_interval_ms": 1000,        # 通知轮询间隔
     "ignore_sources": [],            # 不提醒的会话名
     "avatar_dir": "",                # 头像目录，留空则用程序目录下的 avatars
+    # ---- 监听范围 ----
+    "enabled_apps": default_apps(),  # 只提醒这些应用的通知
+    # AUMID -> 中文名 的学习缓存，运行时从通知里自动补全
+    "app_names": {},
+    # ---- 启动 ----
+    "autostart": False,              # 开机自启（写 HKCU Run 注册表项）
 }
 
 # 数值型配置的合法区间，读取和保存时都会夹紧
@@ -58,15 +84,47 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _rename_legacy_logs(target: str) -> None:
+    """把搬过来的旧日志文件改成新名字，免得目录里留着 wechat-toast.log 让人困惑。"""
+    for suffix in ("", ".1", ".2"):
+        old = os.path.join(target, f"wechat-toast.log{suffix}")
+        new = os.path.join(target, f"desktop-toast.log{suffix}")
+        if os.path.exists(old) and not os.path.exists(new):
+            try:
+                os.replace(old, new)
+            except Exception:
+                pass
+
+
+def _migrate_legacy_dir(root: str, target: str) -> None:
+    """把改名前的配置目录（%APPDATA%\\WeChatToast）整目录搬到新目录。"""
+    legacy = os.path.join(root, LEGACY_APP_NAME)
+    if os.path.isdir(target) or not os.path.isdir(legacy):
+        return
+    try:
+        shutil.move(legacy, target)
+    except Exception:
+        # 旧程序可能还开着，日志文件被占用，退一步只搬配置
+        try:
+            os.makedirs(target, exist_ok=True)
+            src = os.path.join(legacy, "config.json")
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(target, "config.json"))
+        except Exception:
+            pass
+    _rename_legacy_logs(target)
+
+
 def config_dir() -> str:
     """配置目录。
 
-    打包后固定放到 %APPDATA%\\WeChatToast，这样 exe 被移动、复制、重新下载都不会丢配置；
+    打包后固定放到 %APPDATA%\\DesktopToast，这样 exe 被移动、复制、重新下载都不会丢配置；
     源码运行时直接用项目目录，方便开发调试。
     """
     if getattr(sys, "frozen", False):
         root = os.environ.get("APPDATA") or os.path.expanduser("~")
-        d = os.path.join(root, "WeChatToast")
+        d = os.path.join(root, APP_NAME)
+        _migrate_legacy_dir(root, d)
     else:
         d = app_dir()
     os.makedirs(d, exist_ok=True)
@@ -82,7 +140,7 @@ def default_avatar_dir() -> str:
     return os.path.join(config_dir(), "avatars")
 
 
-def _migrate_legacy() -> None:
+def _migrate_exe_config() -> None:
     """旧版把 config.json 放在 exe 同目录，这里迁移到配置目录，避免用户配置丢失。"""
     if not getattr(sys, "frozen", False):
         return
@@ -95,6 +153,60 @@ def _migrate_legacy() -> None:
             print(f"[info] 已迁移旧配置: {old} -> {new}")
         except Exception as e:
             print(f"[warn] 配置迁移失败: {e}")
+
+
+def _normalize_apps(raw) -> list[dict]:
+    """把「监听哪些应用」清洗成 [{key, name, aumid, match}]。
+
+    match 全是小写，空项丢弃；整项没有有效匹配串的直接忽略，
+    否则会出现「勾了但永远匹配不到」的幽灵条目。
+    aumid 是精确匹配用的原始标识，有就带上，匹配时优先级最高。
+    """
+    if not isinstance(raw, list):
+        return default_apps()
+
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        match = item.get("match")
+        if not isinstance(match, list):
+            match = [match] if match else []
+
+        pats: list[str] = []
+        for m in [name, *match]:
+            s = str(m or "").strip().lower()
+            if s and s not in pats:
+                pats.append(s)
+        aumid = str(item.get("aumid") or "").strip()
+        if aumid and aumid.lower() not in pats:
+            pats.append(aumid.lower())
+        if not pats:
+            continue
+
+        key = str(item.get("key") or pats[0]).strip() or pats[0]
+        entry = {"key": key, "name": name, "match": pats}
+        if aumid:
+            entry["aumid"] = aumid
+        out.append(entry)
+
+    return out
+
+
+def _normalize_app_names(raw) -> dict[str, str]:
+    """清洗 AUMID -> 中文名 学习缓存，只保留非空字符串。"""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        k = str(k or "").strip()
+        v = str(v or "").strip()
+        if k and v:
+            out[k] = v
+    return out
 
 
 def normalize(cfg: dict) -> dict:
@@ -114,8 +226,29 @@ def normalize(cfg: dict) -> dict:
         out["theme"] = "dark"
     if out["position"] not in ("top-right", "top-left", "bottom-right", "bottom-left"):
         out["position"] = "top-right"
-    if not isinstance(out["ignore_sources"], list):
-        out["ignore_sources"] = []
+    if out["screen"] not in ("cursor", "primary"):
+        out["screen"] = "cursor"
+
+    # 免打扰列表：只保留非空字符串并去重（保持用户输入顺序）
+    raw_ignore = out.get("ignore_sources")
+    if not isinstance(raw_ignore, list):
+        raw_ignore = []
+    cleaned: list[str] = []
+    for item in raw_ignore:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if name and name not in cleaned:
+            cleaned.append(name)
+    out["ignore_sources"] = cleaned
+
+    out["autostart"] = bool(out.get("autostart", False))
+    out["merge_same_source"] = bool(out.get("merge_same_source", True))
+    out["show_content"] = bool(out.get("show_content", True))
+
+    # 监听范围：至少保留用户明确选择的集合，空列表表示「什么都不弹」
+    out["enabled_apps"] = _normalize_apps(out.get("enabled_apps"))
+    out["app_names"] = _normalize_app_names(out.get("app_names"))
 
     # 头像目录留空时落到配置目录下的 avatars
     av = out.get("avatar_dir") or ""
@@ -142,7 +275,7 @@ def _for_file(cfg: dict) -> dict:
 
 
 def load() -> dict:
-    _migrate_legacy()
+    _migrate_exe_config()
     path = config_path()
     if not os.path.exists(path):
         cfg = normalize(dict(DEFAULT_CONFIG))
