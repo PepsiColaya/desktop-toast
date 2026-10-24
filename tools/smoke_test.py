@@ -47,29 +47,29 @@ def check(name: str, got, want) -> None:
 def test_parse() -> None:
     print("[解析] 微信 Toast 文本 -> 消息对象")
 
-    m = parse_wechat(["微信", "产品研发群", "张伟 : 这个版本的接口文档我下午更新一下"], 1)
+    m = parse_wechat(["微信", "示例群", "张三 : 这个版本的接口文档我下午更新一下"], 1)
     check("群消息拆分发送者", (m.source, m.sender, m.content),
-          ("产品研发群", "张伟", "这个版本的接口文档我下午更新一下"))
+          ("示例群", "张三", "这个版本的接口文档我下午更新一下"))
 
     # 单聊正文里的中文冒号不该被当成分隔符（旧版的 bug）
-    m = parse_wechat(["微信", "李静", "会议时间：明天下午三点，别忘了"], 2)
+    m = parse_wechat(["微信", "李四", "会议时间：明天下午三点，别忘了"], 2)
     check("单聊正文含中文冒号", (m.sender, m.content),
           ("", "会议时间：明天下午三点，别忘了"))
 
-    m = parse_wechat(["微信", "李静", "好的，收到"], 3)
+    m = parse_wechat(["微信", "李四", "好的，收到"], 3)
     check("单聊无冒号", (m.sender, m.content), ("", "好的，收到"))
 
-    m = parse_wechat(["微信", "李静", "Bob: 我十分钟后到"], 4)
+    m = parse_wechat(["微信", "李四", "Bob: 我十分钟后到"], 4)
     check("正文里带英文冒号+空格", (m.sender, m.content), ("Bob", "我十分钟后到"))
 
-    m = parse_wechat(["微信", "家里群", "妈：晚上回来吃饭吗，我做了汤"], 5)
+    m = parse_wechat(["微信", "示例群", "张：晚上七点开会，别迟到"], 5)
     check("正文含句读标点不误判", m.sender, "")
 
     # 非微信通知现在走通用解析，由应用白名单决定要不要弹
     m = parse_wechat(["Python 3.13", "安装完成"], 6)
     check("非微信通知走通用解析", (m.source, m.content), ("Python 3.13", "安装完成"))
     check("文本行不足忽略", parse_wechat(["微信"], 7), None)
-    check("图片消息正文为空", parse_wechat(["微信", "李静"], 8).content, "")
+    check("图片消息正文为空", parse_wechat(["微信", "李四"], 8).content, "")
 
 
 def test_wrap() -> None:
@@ -116,9 +116,9 @@ def test_multi_app() -> None:
     check("通用应用标题带应用名", m.display_title, "WorkBuddy AI · 任务已完成")
     check("通用应用不算微信", m.is_wechat, False)
 
-    m = parse_notification(["微信", "产品研发群", "张伟 : 在吗"], 21, "微信")
+    m = parse_notification(["微信", "示例群", "张三 : 在吗"], 21, "微信")
     check("微信仍走三段式", (m.source, m.sender, m.content),
-          ("产品研发群", "张伟", "在吗"))
+          ("示例群", "张三", "在吗"))
 
     # 关键：正文/标题里出现 wechat 不能把别的应用误判成微信。
     # 默认名单已经不含微信（PC 微信不发通知，系统通知设置里也没它），
@@ -148,23 +148,23 @@ def test_multi_app() -> None:
     # 只勾微信时必须靠首行才能认出来，否则一条微信都收不到
     w.set_enabled_apps(wx)
     check("只勾微信时手机连接转发的微信放行",
-          w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), True)
+          w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), True)
     check("只勾微信时其它手机 App 被挡",
           w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), False)
     # 默认名单是手机连接：转发的手机 App 全部放行，非手机来源仍挡掉
     w.set_enabled_apps(cfgmod.default_apps())
     check("默认名单放行手机连接转发",
-          w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), True)
+          w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), True)
     check("默认名单也放行其它手机 App",
           w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), True)
     check("默认名单挡掉非手机来源",
           w.app_enabled("WorkBuddy.WorkBuddyAI", "WorkBuddy AI", ["任务已完成"]), False)
-    m = parse_notification(["微信", "妈妈", "对"], 22, "手机连接")
-    check("手机连接微信解析出会话", m.source, "妈妈")
-    check("手机连接微信解析出正文", m.content, "对")
+    m = parse_notification(["微信", "示例联系人", "好的"], 22, "手机连接")
+    check("手机连接微信解析出会话", m.source, "示例联系人")
+    check("手机连接微信解析出正文", m.content, "好的")
 
     # 消息要带上来源 AUMID，点击卡片时才知道该唤起谁
-    m = parse_notification(["微信", "妈妈", "对"], 30, "手机连接",
+    m = parse_notification(["微信", "示例联系人", "好的"], 30, "手机连接",
                            "Microsoft.YourPhone_8wekyb3d8bbwe!App")
     check("解析带出来源 aumid", m.aumid, "Microsoft.YourPhone_8wekyb3d8bbwe!App")
     m = parse_notification(["任务已完成", "装好了"], 31, "WorkBuddy AI",
@@ -179,7 +179,7 @@ def test_multi_app() -> None:
           w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), True)
     w.set_phone_apps(["微信"], known)
     check("只勾微信时微信放行",
-          w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), True)
+          w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), True)
     check("只勾微信时 QQ 被挡",
           w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), False)
     check("只勾微信时快捷指令被挡",
@@ -188,7 +188,7 @@ def test_multi_app() -> None:
           w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), True)
     w.set_phone_apps([], known)
     check("全不勾时手机通知全挡",
-          w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), False)
+          w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), False)
 
 
 def test_config() -> None:
@@ -262,13 +262,13 @@ def test_toast(app: QApplication) -> None:
     print("[卡片] 渲染尺寸与同会话合并")
     cfg = cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG))
 
-    m1 = WeChatMessage("产品研发群", "张伟", "第一条消息", time.time(), 1)
+    m1 = WeChatMessage("示例群", "张三", "第一条消息", time.time(), 1)
     t = Toast(m1, cfg)
     h1 = t.card_h
     check("卡片宽度", t.card_w, 340)
     check("单行正文高度", t.card_h, h1)
 
-    m2 = WeChatMessage("产品研发群", "李静", "第二条消息，稍微长一点点", time.time(), 2)
+    m2 = WeChatMessage("示例群", "李四", "第二条消息，稍微长一点点", time.time(), 2)
     check("更新成功", t.update_message(m2), True)
     check("合并计数", t._count, 2)
     check("标题带条数", "（2）" in t.title_text, True)
@@ -277,8 +277,8 @@ def test_toast(app: QApplication) -> None:
     t.deleteLater()
 
     manager = ToastManager(cfg, app)
-    manager.push(WeChatMessage("家里群", "", "吃饭了", time.time(), 10))
-    manager.push(WeChatMessage("家里群", "", "快点", time.time(), 11))
+    manager.push(WeChatMessage("示例群", "", "第一条", time.time(), 10))
+    manager.push(WeChatMessage("示例群", "", "第二条", time.time(), 11))
     check("同会话只留一张", len(manager.active), 1)
     check("条数累加", manager.active[0]._count, 2)
 
@@ -286,7 +286,7 @@ def test_toast(app: QApplication) -> None:
     check("不同会话新增一张", len(manager.active), 2)
 
     manager.cfg["merge_same_source"] = False
-    manager.push(WeChatMessage("家里群", "", "第三条", time.time(), 13))
+    manager.push(WeChatMessage("示例群", "", "第三条", time.time(), 13))
     check("关掉合并后新增", len(manager.active), 3)
 
     manager.close_all()
@@ -294,9 +294,9 @@ def test_toast(app: QApplication) -> None:
     # 简略模式：只显示「有一条新消息」
     cfg2 = cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG))
     cfg2["show_content"] = False
-    t2 = Toast(WeChatMessage("产品研发群", "张伟", "这是不该被看到的内容", time.time(), 14), cfg2)
+    t2 = Toast(WeChatMessage("示例群", "张三", "这是不该被看到的内容", time.time(), 14), cfg2)
     check("简略模式正文", t2.body_lines, ["有一条新消息"])
-    check("简略模式仍显示会话", t2.title_text, "产品研发群 · 张伟")
+    check("简略模式仍显示会话", t2.title_text, "示例群 · 张三")
     t2.close()
     t2.deleteLater()
 
@@ -506,7 +506,7 @@ def test_click() -> None:
     print("[点击] 卡片回调带上来源消息")
     cfg = cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG))
     got: list = []
-    msg = WeChatMessage("产品研发群", "张伟", "内容", time.time(), 1,
+    msg = WeChatMessage("示例群", "张三", "内容", time.time(), 1,
                         app="手机连接", aumid="Microsoft.YourPhone_8wekyb3d8bbwe!App")
     t = Toast(msg, cfg, on_open=lambda m: got.append(m))
     check("消息带 aumid", t.msg.aumid, "Microsoft.YourPhone_8wekyb3d8bbwe!App")

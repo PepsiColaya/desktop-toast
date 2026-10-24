@@ -222,7 +222,7 @@ def main() -> int:
 
     def show_test(test_cfg: dict):
         msg = WeChatMessage(
-            "产品研发群", "张伟",
+            "示例群", "张三",
             "这是一条测试消息，看看现在的效果是否合适", time.time(), 0,
         )
         # 预览卡片没有真实来源，点了只淡出，不去唤起任何应用

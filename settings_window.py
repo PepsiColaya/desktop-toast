@@ -27,8 +27,8 @@ from toast import Toast
 from watcher import WeChatMessage
 
 PREVIEW_MSGS = [
-    WeChatMessage("产品研发群", "张伟", "这个版本的接口文档我下午更新一下，你们先按旧的对", time.time(), 1),
-    WeChatMessage("李静", "", "好的，收到，我这边先联调", time.time(), 2),
+    WeChatMessage("示例群", "张三", "这个版本的接口文档我下午更新一下，你们先按旧的对", time.time(), 1),
+    WeChatMessage("李四", "", "好的，收到，我这边先联调", time.time(), 2),
 ]
 
 STYLE = """
