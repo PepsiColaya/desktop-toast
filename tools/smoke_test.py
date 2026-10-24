@@ -16,15 +16,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 ROOT = Path(__file__).resolve().parent.parent
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QFont, QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import config as cfgmod  # noqa: E402
 import guide  # noqa: E402
 import apps  # noqa: E402
+import autostart  # noqa: E402
+import watcher as watcher_mod  # noqa: E402
 import opener  # noqa: E402
 import wechat  # noqa: E402
-from settings_window import STYLE, tooltip_html  # noqa: E402
+from settings_window import STYLE, SettingsWindow, tooltip_html  # noqa: E402
 from toast import Toast, ToastManager, wrap_text  # noqa: E402
 from watcher import WeChatMessage, WeChatWatcher, parse_notification  # noqa: E402
 
@@ -145,10 +148,11 @@ def test_multi_app() -> None:
 
     # 手机连接转发：AUMID 和显示名都是「手机连接」，真实来源只在首行
     phone = "Microsoft.YourPhone_8wekyb3d8bbwe!App"
-    # 只勾微信时必须靠首行才能认出来，否则一条微信都收不到
+    # 手机连接是唯一入口：名单里没有它，手机转发来的一律不放行，
+    # 哪怕勾着同名的 PC 应用也不能把它顶回来
     w.set_enabled_apps(wx)
-    check("只勾微信时手机连接转发的微信放行",
-          w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), True)
+    check("只勾微信时手机转发来的也挡掉（入口没勾）",
+          w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), False)
     check("只勾微信时其它手机 App 被挡",
           w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), False)
     # 默认名单是手机连接：转发的手机 App 全部放行，非手机来源仍挡掉
@@ -184,11 +188,69 @@ def test_multi_app() -> None:
           w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), False)
     check("只勾微信时快捷指令被挡",
           w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), False)
-    check("认不出的手机 App 放行（宁可多弹不漏）",
+    check("白名单模式下认不出的手机 App 不放行",
+          w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), False)
+    # 学到的名字能补上：先学，再判，就能按勾选放行
+    w._learn_phone_app("某新App")
+    check("学到的名字进 known", "某新app" in w._phone_known, True)
+    check("学到之后仍按勾选挡",
+          w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), False)
+    w.set_phone_apps(["微信", "某新App"])      # 不传 known，保留刚学到的
+    check("勾上之后就放行",
           w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), True)
     w.set_phone_apps([], known)
     check("全不勾时手机通知全挡",
           w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), False)
+    check("全不勾时认不出的手机 App 也挡",
+          w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), False)
+
+    # 取消「手机连接」后，勾着的同名 PC 应用不能把手机通知顶回来
+    # （PC 版 QQ 的匹配串就是 qq，手机 QQ 的首行也叫 QQ）
+    pc_qq = [{"key": "qq", "name": "QQ", "aumid": "QQ", "match": ["qq"]}]
+    w.set_enabled_apps(pc_qq)
+    check("只勾 PC QQ 时手机转发来的 QQ 不漏进来",
+          w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), False)
+    check("PC 版 QQ 自己的通知仍放行",
+          w.app_enabled("QQ", "QQ", ["新邮件", "内容"]), True)
+    # 勾上手机连接、但把手机 QQ 子项取消，手机 QQ 要挡
+    w.set_enabled_apps(cfgmod.default_apps())
+    w.set_phone_apps(["微信"], known)
+    check("手机连接在、子项取消 QQ 时挡住手机 QQ",
+          w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), False)
+    w.set_phone_apps(["微信", "QQ"], known)
+    check("子项勾上 QQ 时放行手机 QQ",
+          w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), True)
+
+    # 走一遍真实入口 _handle：学到名字必须发生在过滤之前，
+    # 否则新 App 第一次到达会因为「认不出来」被放行，白名单就形同虚设
+    learned: list[str] = []
+    got: list = []
+    w2 = WeChatWatcher(
+        on_message=got.append,
+        enabled_apps=cfgmod.default_apps(),
+        phone_apps=["微信"],
+        phone_known=["微信"],
+        on_phone_app_learned=learned.append,
+    )
+    real_extract, real_ident = watcher_mod._extract_texts, watcher_mod.app_identity
+    watcher_mod._extract_texts = lambda n: ["彩云天气Pro", "预警订阅", "大风蓝色预警"]
+    watcher_mod.app_identity = lambda n: (phone, "手机连接")
+
+    class FakeNotif:
+        def __init__(self, nid):
+            self.id = nid
+
+    try:
+        w2._handle(FakeNotif(101))
+        check("第一次到达就学到名字", learned, ["彩云天气Pro"])
+        check("不在白名单所以不弹", got, [])
+
+        w2.set_phone_apps(["微信", "彩云天气Pro"])     # 保留刚学到的 known
+        w2._handle(FakeNotif(102))
+        check("勾上之后弹出来", len(got), 1)
+        check("弹的是这个 App", got[0].app if got else "", "手机连接")
+    finally:
+        watcher_mod._extract_texts, watcher_mod.app_identity = real_extract, real_ident
 
 
 def test_config() -> None:
@@ -544,6 +606,73 @@ def test_tray() -> None:
     check("测试卡片不唤应用", "on_open=lambda _m: None" in src, True)
 
 
+def test_apps_tree() -> None:
+    print("[设置树] 同名手机 App 加后缀，配置里仍存真名")
+    # 手机上的 QQ 和电脑上的 QQ 同名，列表里会出现两行「QQ」，
+    # 用户分不清取消的是哪个；子项加后缀，但存进配置的必须是真实 App 名。
+    real = (apps.list_notification_apps, apps.resolve_name, apps.phone_link_apps,
+            apps.phone_link_status, autostart.is_enabled)
+    phone_aumid = "Microsoft.YourPhone_8wekyb3d8bbwe!App"
+    names = {phone_aumid: "手机连接", "QQ": "QQ"}
+    apps.list_notification_apps = lambda: [phone_aumid, "QQ"]
+    apps.resolve_name = lambda aumid, learned=None: names.get(aumid, aumid)
+    apps.phone_link_apps = lambda: [("QQ", "com.tencent.mqq"), ("微信", "com.tencent.xin")]
+    apps.phone_link_status = lambda: "active"
+    autostart.is_enabled = lambda: False
+    w = None
+    try:
+        cfg = cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG))
+        cfg["enabled_apps"] = cfgmod.default_apps()
+        cfg["phone_apps"] = None
+        w = SettingsWindow(cfg)
+
+        tops = {}
+        for i in range(w.tree_apps.topLevelItemCount()):
+            it = w.tree_apps.topLevelItem(i)
+            tops[it.text(0)] = it
+        check("顶层同时有手机连接和 QQ", sorted(tops), ["QQ", "手机连接"])
+
+        phone_row = tops.get("手机连接")
+        kids = [phone_row.child(j).text(0) for j in range(phone_row.childCount())] if phone_row else []
+        check("和顶层同名的子项加后缀", kids, ["QQ（手机）", "微信"])
+        check("不同名的子项保持原名", "微信" in kids, True)
+
+        # 取消手机 QQ，再收集一次，配置里必须是「QQ」而不是「QQ（手机）」
+        for j in range(phone_row.childCount()):
+            if phone_row.child(j).text(0) == "QQ（手机）":
+                phone_row.child(j).setCheckState(0, Qt.CheckState.Unchecked)
+        w._collect()
+        check("取消后只剩微信", w._cfg.get("phone_apps"), ["微信"])
+
+        # 全部取消 = 全不收（不是「保持原值」）
+        for j in range(phone_row.childCount()):
+            phone_row.child(j).setCheckState(0, Qt.CheckState.Unchecked)
+        w._collect()
+        check("子项全取消存空列表", w._cfg.get("phone_apps"), [])
+
+        # 父项取消后，配置里不该再有手机连接
+        phone_row.setCheckState(0, Qt.CheckState.Unchecked)
+        w._collect()
+        check("取消手机连接后名单为空", w._cfg.get("enabled_apps"), [])
+
+        # 注册表里没有、但从通知首行学到的手机 App 也要出现在子项里
+        w._cfg["phone_known"] = ["彩云天气Pro"]
+        w._cfg["enabled_apps"] = cfgmod.default_apps()
+        w._reload_apps()
+        row = None
+        for i in range(w.tree_apps.topLevelItemCount()):
+            if w.tree_apps.topLevelItem(i).text(0) == "手机连接":
+                row = w.tree_apps.topLevelItem(i)
+        kids2 = [row.child(j).text(0) for j in range(row.childCount())] if row else []
+        check("学到的手机 App 进了列表", "彩云天气Pro" in kids2, True)
+    finally:
+        (apps.list_notification_apps, apps.resolve_name, apps.phone_link_apps,
+         apps.phone_link_status, autostart.is_enabled) = real
+        if w is not None:
+            w.close()
+            w.deleteLater()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     test_parse()
@@ -551,6 +680,7 @@ def main() -> int:
     test_multi_app()
     test_config()
     test_apps()
+    test_apps_tree()
     test_guide()
     test_tooltip()
     test_migrate()

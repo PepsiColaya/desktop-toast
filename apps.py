@@ -219,7 +219,7 @@ PHONE_APP_NAMES: dict[str, str] = {
     "com.kiwik.usmartgo": "什么值得买",
     "com.xinchuzu.driver": "鑫租房司机端",
     "com.yabin.chiyaozhushou": "吃药助手",
-    "net.colorfulclouds.app.pro": "心光",
+    "net.colorfulclouds.app.pro": "彩云天气Pro",
     "com.dancesuite.dance.ka.kazsy73qyq": "舞蹈 App",
 }
 

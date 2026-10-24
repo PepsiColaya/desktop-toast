@@ -71,6 +71,8 @@ DEFAULT_CONFIG: dict = {
     #   []    = 一个都不收
     #   [...] = 只收这些手机 App（微信 / QQ / 电话…）
     "phone_apps": None,
+    # 从手机通知首行学到的 App 名，补注册表那份列表的漏
+    "phone_known": [],
     # AUMID -> 中文名 的学习缓存，运行时从通知里自动补全
     "app_names": {},
     # ---- 启动 ----
@@ -255,6 +257,25 @@ def _normalize_phone_apps(raw):
     return out
 
 
+def _normalize_phone_known(raw):
+    """清洗「见过的手机 App 名」缓存。
+
+    注册表里那份列表会漏：有的 App 通知首行的名字和注册表标签对不上
+    （包名 net.colorfulclouds.app.pro 在注册表里叫「心光」，通知里叫「彩云天气Pro」），
+    有的是企业自建应用压根没注册。所以运行时从通知首行学一份，存下来。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if name and len(name) <= 40 and name not in out:
+            out.append(name)
+        if len(out) >= 200:
+            break
+    return out
+
+
 def normalize(cfg: dict) -> dict:
     """补齐缺失项并把数值夹到合法区间。"""
     out = dict(DEFAULT_CONFIG)
@@ -301,6 +322,7 @@ def normalize(cfg: dict) -> dict:
     out["enabled_apps"] = _normalize_apps(out.get("enabled_apps"))
     out["app_names"] = _normalize_app_names(out.get("app_names"))
     out["phone_apps"] = _normalize_phone_apps(out.get("phone_apps"))
+    out["phone_known"] = _normalize_phone_known(out.get("phone_known"))
 
     # 头像目录留空时落到配置目录下的 avatars
     av = out.get("avatar_dir") or ""

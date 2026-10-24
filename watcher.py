@@ -217,6 +217,7 @@ class WeChatWatcher:
         on_app_learned: Optional[Callable[[str, str], None]] = None,
         phone_apps: Optional[list[str]] = None,
         phone_known: Optional[list[str]] = None,
+        on_phone_app_learned: Optional[Callable[[str], None]] = None,
     ):
         self._on_message = on_message
         self._on_status = on_status or (lambda s: None)
@@ -232,6 +233,8 @@ class WeChatWatcher:
         }
         # 本机手机连接正在转发的手机 App 名，用来判断首行认不认得出来
         self._phone_known = {str(x).strip().lower() for x in (phone_known or []) if str(x).strip()}
+        # 从通知首行学到新的手机 App 名时回调，供设置界面补进列表
+        self._on_phone_app_learned = on_phone_app_learned
 
         self._seen: OrderedDict[int, str] = OrderedDict()
         self._recent: OrderedDict[str, float] = OrderedDict()
@@ -280,6 +283,10 @@ class WeChatWatcher:
                  "不过滤" if self._phone_apps is None
                  else ("、".join(sorted(self._phone_apps)) or "（全不勾）"))
 
+    def set_phone_known(self, names: list[str]) -> None:
+        """更新「已知手机 App 名」，不影响勾选状态。"""
+        self._phone_known = {str(x).strip().lower() for x in (names or []) if str(x).strip()}
+
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
@@ -296,49 +303,89 @@ class WeChatWatcher:
         hay = " ".join(x for x in (aumid, app_name) if x).lower()
 
         # 手机连接转发：AUMID 和显示名都是「手机连接」，光看这两个字段分不出是微信
-        # 还是别的 App，真实来源在首行（微信 / 快捷指令 / TestFlight…），所以把首行也纳入。
-        # 首行是应用名或标题，不是正文，不会把正文里的关键词误当成应用。
-        via_phone = bool(texts) and any(h in hay for h in PHONE_LINK_HINTS)
-        if via_phone:
-            hay = f"{hay} {texts[0].lower()}".strip()
+        # 还是别的 App，真实来源在首行（微信 / 快捷指令 / TestFlight…）。
+        #
+        # 这里必须单独一条路走到底，不能把首行拼进 hay 再去和所有应用比：
+        # PC 版 QQ 的匹配串就是「qq」，手机上来的 QQ 消息首行也叫「QQ」，
+        # 一比就把「取消手机连接」顶回来了——这正是「取消了还在弹」的原因。
+        if bool(texts) and any(h in hay for h in PHONE_LINK_HINTS):
+            if not self._phone_gateway_enabled():
+                return False
+            return self._phone_app_allowed(texts)
 
         if not hay:
             # 拿不到应用标识时退回旧规则：只看第一行是不是微信
             hay = (texts[0] if texts else "").lower()
 
-        hit = False
         for app in self._enabled_apps:
             for pat in app.get("match", []):
                 if pat and pat in hay:
-                    hit = True
-                    break
-            if hit:
-                break
-        if not hit:
-            return False
+                    return True
+        return False
 
-        # 应用过了还要再过一层手机 App 子项：手机连接把所有手机通知都收进来，
-        # 用户可能只想留微信，不想看手机上的其它推送
-        if via_phone and not self._phone_app_allowed(texts):
-            return False
-        return True
+    def _phone_gateway_enabled(self) -> bool:
+        """「手机连接」这一项本身在不在监听名单里。
+
+        它是所有手机通知的唯一入口：没勾它，手机转发来的一律不放行，
+        哪怕名单里还勾着同名的 PC 应用（比如 PC 版 QQ）。
+        """
+        for app in self._enabled_apps:
+            hay = f"{app.get('aumid') or ''} {app.get('name') or ''}".lower()
+            if any(h in hay for h in PHONE_LINK_HINTS):
+                return True
+        return False
 
     def _phone_app_allowed(self, texts: list[str]) -> bool:
-        """手机转发来的这条通知，对应的手机 App 是否在勾选范围内。"""
+        """手机转发来的这条通知，对应的手机 App 是否在勾选范围内。
+
+        名单是白名单：勾了哪些就只收哪些。认不出来的不再无条件放行——
+        那样「只勾微信」就成了空话，手机上随便哪个 App 都能弹出来。
+        认不出来的会在到达时被记进 phone_known（见 _learn_phone_app），
+        所以第一次之后就能在设置里看到并单独勾选。
+        """
         if self._phone_apps is None:
             return True
+        if not self._phone_apps:
+            # 一个都没勾 = 手机 App 全不收
+            return False
         if not texts:
             return True
         first = texts[0].strip().lower()
         if not first:
             return True
-        # 只在能明确认出是某个已知手机 App 时才按勾选过滤。
-        # 认不出来（新装的 App、名字和注册表里对不上）一律放行，
-        # 宁可多弹一条，也不能因为对不上名字把消息吃掉。
-        for label in self._phone_known:
-            if label and (label in first or first in label):
-                return label in self._phone_apps
-        return True
+
+        # 先认完全相同的，避免「QQ」把「QQ音乐」的勾选状态抢走
+        if first in self._phone_known:
+            return first in self._phone_apps
+        # 再按最长匹配兜底（「QQ邮箱 · 新邮件」这种首行带后缀的）
+        cands = [l for l in self._phone_known if l and (l in first or first in l)]
+        if cands:
+            return max(cands, key=len) in self._phone_apps
+        return False
+
+    def _is_phone_source(self, aumid: str, app_name: str) -> bool:
+        hay = f"{aumid or ''} {app_name or ''}".lower()
+        return any(h in hay for h in PHONE_LINK_HINTS)
+
+    def _learn_phone_app(self, name: str) -> None:
+        """从通知首行学一个手机 App 名。
+
+        注册表那份列表会漏（名字对不上、企业自建应用没注册），
+        这里按真实通知补，学到就回调给主程序存进配置。
+        """
+        name = (name or "").strip()
+        if not name or len(name) > 40:
+            return
+        low = name.lower()
+        if low in self._phone_known:
+            return
+        self._phone_known.add(low)
+        log.info("学到手机 App 名: %s", name)
+        if self._on_phone_app_learned is not None:
+            try:
+                self._on_phone_app_learned(name)
+            except Exception as e:
+                log.debug("手机 App 名学习回调失败: %s", e)
 
     # ---------- 主循环 ----------
     def _learn_app_name(self, aumid: str, app_name: str) -> None:
@@ -389,7 +436,14 @@ class WeChatWatcher:
         # 首次读取只建立基线，避免把历史通知全部弹出来
         try:
             for n in await listener.get_notifications_async(NotificationKinds.TOAST):
-                self._seen[n.id] = "|".join(_extract_texts(n))
+                texts = _extract_texts(n)
+                self._seen[n.id] = "|".join(texts)
+                # 顺手把历史里的手机 App 名学一遍：白名单要勾得上，
+                # 就得先把名字凑齐，否则升级后第一次收到的 App 会被默默挡掉
+                if texts:
+                    aumid, name = app_identity(n)
+                    if self._is_phone_source(aumid, name):
+                        self._learn_phone_app(texts[0])
             log.info("基线建立完成，已有 %d 条通知", len(self._seen))
         except Exception as e:
             log.warning("建立通知基线失败: %s", e)
@@ -428,6 +482,10 @@ class WeChatWatcher:
 
         aumid, app_name = app_identity(n)
         self._learn_app_name(aumid, app_name)
+        # 手机转发来的先学首行的 App 名，再判过滤：
+        # 这样新 App 第一次到达就能被记进名单，之后勾不勾才管得住
+        if self._is_phone_source(aumid, app_name):
+            self._learn_phone_app(texts[0])
         if not self.app_enabled(aumid, app_name, texts):
             log.debug("应用不在监听范围，已跳过: aumid=%r name=%r text0=%r",
                       aumid, app_name, texts[0])

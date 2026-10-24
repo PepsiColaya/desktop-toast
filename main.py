@@ -40,6 +40,8 @@ class Bridge(QObject):
     denied = Signal()
     # 学到新的 AUMID -> 应用名，用于把设置界面里的英文名换成中文名
     app_learned = Signal(str, str)
+    # 从手机通知首行学到新的手机 App 名，补进设置界面的子项列表
+    phone_app_learned = Signal(str)
 
 
 def ensure_single_instance() -> bool:
@@ -200,10 +202,19 @@ def main() -> int:
     tray.activated.connect(on_tray_activated)
 
     # ---------- 配置应用 ----------
+    def phone_known_names() -> list[str]:
+        """已知的手机 App 名：注册表那份 + 运行时从通知首行学到的。"""
+        names = [label for label, _ in apps.phone_link_apps()]
+        for n in cfg.get("phone_known", []) or []:
+            if n not in names:
+                names.append(n)
+        return names
+
     def apply_cfg(new_cfg: dict):
         # 应用名学习缓存是运行时攒的，设置面板那份配置可能是旧的，别被覆盖掉
         merged = dict(new_cfg)
         merged["app_names"] = {**(new_cfg.get("app_names") or {}), **(cfg.get("app_names") or {})}
+        merged["phone_known"] = list(cfg.get("phone_known") or [])
         cfg.clear()
         cfg.update(merged)
         manager.cfg = cfg
@@ -213,10 +224,7 @@ def main() -> int:
             watcher.set_ignore_sources(cfg.get("ignore_sources", []))
             watcher.set_enabled_apps(cfg.get("enabled_apps", []))
             # 手机连接的子项：勾了哪些手机 App 才提醒
-            watcher.set_phone_apps(
-                cfg.get("phone_apps"),
-                [label for label, _ in apps.phone_link_apps()],
-            )
+            watcher.set_phone_apps(cfg.get("phone_apps"), phone_known_names())
 
     settings.applied.connect(apply_cfg)
 
@@ -283,14 +291,31 @@ def main() -> int:
         _learn_save_timer.start()
 
     def flush_learned():
-        if not _learn_save_timer.isActive():
-            return
+        # 单次定时器触发时 isActive() 已经是 False 了，别拿它当「有没有东西要存」的判据
+        # （之前的写法导致学到的东西一次都没落过盘）。定时器只在真的学到新东西时启动，
+        # 走到这里就直接存。
         _learn_save_timer.stop()
         if cfgmod.save(cfg):
-            log.info("应用名缓存已保存，共 %d 条", len(cfg.get("app_names", {})))
+            log.info("学习缓存已保存：应用名 %d 条，手机 App %d 个",
+                     len(cfg.get("app_names", {})), len(cfg.get("phone_known", []) or []))
 
     _learn_save_timer.timeout.connect(flush_learned)
     bridge.app_learned.connect(on_app_learned)
+
+    # 手机连接转发的通知首行就是手机 App 名。注册表那份列表会漏
+    # （名字对不上、企业自建应用没注册），学到就补进配置，设置界面能勾选。
+    def on_phone_app_learned(name: str):
+        known = list(cfg.get("phone_known", []) or [])
+        if not name or name in known:
+            return
+        known.append(name)
+        cfg["phone_known"] = known
+        if watcher is not None:
+            watcher.set_phone_known(phone_known_names())
+        settings.refresh_phone_apps(name)
+        _learn_save_timer.start()
+
+    bridge.phone_app_learned.connect(on_phone_app_learned)
 
     watcher = WeChatWatcher(
         on_message=bridge.message.emit,
@@ -300,7 +325,8 @@ def main() -> int:
         enabled_apps=cfg.get("enabled_apps", []),
         on_app_learned=bridge.app_learned.emit,
         phone_apps=cfg.get("phone_apps"),
-        phone_known=[label for label, _ in apps.phone_link_apps()],
+        phone_known=phone_known_names(),
+        on_phone_app_learned=bridge.phone_app_learned.emit,
     )
     watcher.start()
 

@@ -497,6 +497,38 @@ class SettingsWindow(QWidget):
 
         return box
 
+    def _phone_labels(self) -> list[tuple[str, str]]:
+        """「手机连接」下面要列的手机 App：注册表那份 + 从通知里学到的。
+
+        注册表会漏——有的 App 通知首行的名字和注册表标签对不上
+        （包名 net.colorfulclouds.app.pro 在注册表里叫「心光」，通知里叫「彩云天气Pro」），
+        企业自建应用还可能压根没注册。学到的那些没有 AUMID，第二个字段留空。
+        """
+        rows = list(apps.phone_link_apps())
+        seen = {label for label, _ in rows}
+        for name in (self._cfg.get("phone_known") or []):
+            if name not in seen:
+                rows.append((name, ""))
+                seen.add(name)
+        rows.sort(key=lambda r: (r[0].lower(), r[1]))
+        return rows
+
+    def refresh_phone_apps(self, learned: str = ""):
+        """运行中学到新的手机 App 时把列表补上。
+
+        窗口没开就不用管——下次打开会从配置里重读。
+        ``learned`` 是刚学到的名字，先并进自己这份配置再重建列表，
+        否则重建出来还是旧的那份。
+        """
+        if not self.isVisible():
+            return
+        if learned:
+            known = list(self._cfg.get("phone_known") or [])
+            if learned not in known:
+                known.append(learned)
+            self._cfg["phone_known"] = known
+        self._reload_apps()
+
     def _reload_apps(self):
         """列出本机通知设置里的应用，并标出哪些在监听名单里。
 
@@ -547,8 +579,11 @@ class SettingsWindow(QWidget):
         was_loading = self._loading
         self._loading = True
         self.tree_apps.clear()
-        phone_labels = apps.phone_link_apps()
+        phone_labels = self._phone_labels()
         phone_picked = self._cfg.get("phone_apps")   # None = 不过滤，全收
+        # 手机上的 App 可能和电脑上的应用同名（QQ 最典型），列表里会出现两行「QQ」，
+        # 用户根本分不清取消的是哪个。同名时给子项加个后缀，但存进配置的仍是原名。
+        top_names = {name for _, name, _, _ in rows}
 
         for record, name, sub, checked in rows:
             it = QTreeWidgetItem([name])
@@ -561,12 +596,13 @@ class SettingsWindow(QWidget):
             # 「手机连接」下面挂上它正在转发的手机 App，勾哪个收哪个
             if apps.is_phone_link_aumid(str(record.get("aumid") or sub)):
                 for label, paumid in phone_labels:
-                    ch = QTreeWidgetItem([label])
+                    shown = f"{label}（手机）" if label in top_names else label
+                    ch = QTreeWidgetItem([shown])
                     ch.setData(0, Qt.UserRole, {"key": f"phone:{label}", "name": label})
                     ch.setToolTip(0, tooltip_html(
-                        label,
+                        shown,
                         "来自「手机连接」转发",
-                        f"标识：{paumid}",
+                        f"标识：{paumid or '（从通知首行学到，注册表里没有）'}",
                     ))
                     ch.setFlags(ch.flags() | Qt.ItemIsUserCheckable)
                     on = phone_picked is None or label in phone_picked
@@ -987,10 +1023,15 @@ class SettingsWindow(QWidget):
                 continue
             phone_seen = True
             total = top.childCount()
-            picked = [
-                top.child(j).text(0) for j in range(total)
-                if top.child(j).checkState(0) == Qt.Checked
-            ]
+            picked = []
+            for j in range(total):
+                ch = top.child(j)
+                if ch.checkState(0) != Qt.Checked:
+                    continue
+                # 显示名可能带了「（手机）」后缀，配置里存的必须是真实 App 名，
+                # 否则过滤时对不上通知首行，勾了等于没勾
+                meta = ch.data(0, Qt.UserRole) or {}
+                picked.append(str(meta.get("name") or ch.text(0)))
             if total == 0:
                 # 读不到手机 App 列表（注册表异常），别拿空名单把通知全挡掉
                 picked = self._cfg.get("phone_apps")
