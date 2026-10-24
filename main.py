@@ -19,6 +19,7 @@ import autostart
 import config as cfgmod
 import logger
 import logo
+import opener
 import wechat
 from settings_window import SettingsWindow
 from toast import Toast, ToastManager
@@ -86,7 +87,11 @@ def main() -> int:
     test_toasts: list[Toast] = []
     watcher: WeChatWatcher | None = None
 
-    manager = ToastManager(cfg, app, on_open_wechat=wechat.open_wechat)
+    # 点击卡片：按消息来源唤起对应应用（手机连接 / 微信 / 其它）
+    manager = ToastManager(
+        cfg, app,
+        on_open=lambda m: opener.open_source(getattr(m, "aumid", ""), m.app),
+    )
     settings = SettingsWindow(cfg)
 
     # ---------- 托盘 ----------
@@ -190,7 +195,7 @@ def main() -> int:
             "产品研发群", "张伟",
             "这是一条测试消息，看看现在的效果是否合适", time.time(), 0,
         )
-        t = Toast(msg, test_cfg, on_open_wechat=wechat.open_wechat)
+        t = Toast(msg, test_cfg, on_open=lambda _m: wechat.open_wechat())
         t.closed.connect(lambda x: test_toasts.remove(x) if x in test_toasts else None)
         test_toasts.append(t)
         t.appear()

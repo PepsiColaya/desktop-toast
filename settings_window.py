@@ -767,7 +767,12 @@ class SettingsWindow(QWidget):
         self.chk_hover.stateChanged.connect(self._on_widget_change)
         lay.addWidget(self.chk_hover)
 
-        self.chk_click = QCheckBox("点击卡片打开微信")
+        self.chk_click = QCheckBox("点击卡片唤起来源应用")
+        self.chk_click.setToolTip(tooltip_html(
+            "电脑上的应用：把它的窗口拉到前台（没开就直接启动）",
+            "手机连接转发来的：打开「手机连接」，来源 App 在手机上",
+            "认不出来的应用：点了没反应，不会弹错误框",
+        ))
         self.chk_click.stateChanged.connect(self._on_widget_change)
         lay.addWidget(self.chk_click)
 
@@ -917,7 +922,7 @@ class SettingsWindow(QWidget):
         self.sl_max.set_value(c["max_visible"])
 
         self.chk_hover.setChecked(bool(c["hover_pause"]))
-        self.chk_click.setChecked(bool(c["click_to_open_wechat"]))
+        self.chk_click.setChecked(bool(c["click_to_open_source"]))
         self.chk_merge.setChecked(bool(c["merge_same_source"]))
         self.chk_content.setChecked(bool(c["show_content"]))
         # 以注册表真实状态为准，避免配置与系统不一致时开关显示错误
@@ -960,7 +965,7 @@ class SettingsWindow(QWidget):
         c["duration_ms"] = self.sl_duration.value()
         c["max_visible"] = self.sl_max.value()
         c["hover_pause"] = self.chk_hover.isChecked()
-        c["click_to_open_wechat"] = self.chk_click.isChecked()
+        c["click_to_open_source"] = self.chk_click.isChecked()
         c["merge_same_source"] = self.chk_merge.isChecked()
         c["show_content"] = self.chk_content.isChecked()
         c["autostart"] = self.chk_autostart.isChecked()

@@ -162,11 +162,11 @@ class Toast(QWidget):
     closed = Signal(object)
 
     def __init__(self, msg: WeChatMessage, cfg: dict,
-                 on_open_wechat: Optional[Callable[[], None]] = None):
+                 on_open: Optional[Callable[[WeChatMessage], None]] = None):
         super().__init__(None)
         self.msg = msg
         self.cfg = cfg
-        self.on_open_wechat = on_open_wechat or (lambda: None)
+        self.on_open = on_open or (lambda _m: None)
         self.theme = THEMES.get(cfg.get("theme", "dark"), THEMES["dark"])
 
         self._hovering = False
@@ -378,16 +378,16 @@ class Toast(QWidget):
 
     def mousePressEvent(self, evt):
         if evt.button() == Qt.LeftButton:
-            if self.cfg.get("click_to_open_wechat", True):
-                self.on_open_wechat()
+            if self.cfg.get("click_to_open_source", True):
+                self.on_open(self.msg)
             self.fade_out()
         elif evt.button() == Qt.RightButton:
             self._show_menu(evt.globalPosition().toPoint())
 
     def _show_menu(self, pos: QPoint):
         m = QMenu(self)
-        act_open = QAction("打开微信", self)
-        act_open.triggered.connect(self.on_open_wechat)
+        act_open = QAction("打开来源应用", self)
+        act_open.triggered.connect(lambda: self.on_open(self.msg))
         m.addAction(act_open)
         m.addSeparator()
         act_close = QAction("关闭此提示", self)
@@ -438,11 +438,11 @@ class ToastManager(QObject):
     """负责排队、堆叠与位置计算。"""
 
     def __init__(self, cfg: dict, app: QApplication,
-                 on_open_wechat: Optional[Callable[[], None]] = None):
+                 on_open: Optional[Callable[[WeChatMessage], None]] = None):
         super().__init__()
         self.cfg = cfg
         self.app = app
-        self.on_open_wechat = on_open_wechat or (lambda: None)
+        self.on_open = on_open or (lambda _m: None)
 
         self.active: list[Toast] = []
         self.pending: deque[WeChatMessage] = deque(maxlen=30)
@@ -465,7 +465,7 @@ class ToastManager(QObject):
         self._spawn(msg)
 
     def _spawn(self, msg: WeChatMessage):
-        toast = Toast(msg, self.cfg, on_open_wechat=self.on_open_wechat)
+        toast = Toast(msg, self.cfg, on_open=self.on_open)
         toast.closed.connect(self._on_closed)
         self.active.insert(0, toast)      # 最新的排最前
         self._relayout()                  # 先摆到目标屏幕，避免在副屏用户眼前闪一下主屏

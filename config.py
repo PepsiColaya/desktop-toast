@@ -57,7 +57,7 @@ DEFAULT_CONFIG: dict = {
     "fade_in_ms": 170,
     "fade_out_ms": 280,
     "hover_pause": True,             # 鼠标悬停时暂停倒计时
-    "click_to_open_wechat": True,
+    "click_to_open_source": True,    # 点击卡片唤起来源应用（旧键名 click_to_open_wechat）
     "merge_same_source": True,       # 同一会话连续消息合并成一张卡片
     "show_content": True,            # 卡片是否显示消息正文；关掉只显示「有一条新消息」
     "poll_interval_ms": 1000,        # 通知轮询间隔
@@ -259,6 +259,11 @@ def normalize(cfg: dict) -> dict:
     """补齐缺失项并把数值夹到合法区间。"""
     out = dict(DEFAULT_CONFIG)
     out.update({k: v for k, v in cfg.items() if k in DEFAULT_CONFIG})
+
+    # 旧键名迁移：click_to_open_wechat -> click_to_open_source
+    # （点击行为从「只打开微信」改成了「唤起来源应用」）
+    if "click_to_open_source" not in cfg and "click_to_open_wechat" in cfg:
+        out["click_to_open_source"] = bool(cfg["click_to_open_wechat"])
 
     for key, (lo, hi) in RANGES.items():
         try:

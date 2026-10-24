@@ -22,6 +22,8 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import config as cfgmod  # noqa: E402
 import guide  # noqa: E402
 import apps  # noqa: E402
+import opener  # noqa: E402
+import wechat  # noqa: E402
 from settings_window import STYLE, tooltip_html  # noqa: E402
 from toast import Toast, ToastManager, wrap_text  # noqa: E402
 from watcher import WeChatMessage, WeChatWatcher, parse_notification  # noqa: E402
@@ -161,6 +163,14 @@ def test_multi_app() -> None:
     check("手机连接微信解析出会话", m.source, "妈妈")
     check("手机连接微信解析出正文", m.content, "对")
 
+    # 消息要带上来源 AUMID，点击卡片时才知道该唤起谁
+    m = parse_notification(["微信", "妈妈", "对"], 30, "手机连接",
+                           "Microsoft.YourPhone_8wekyb3d8bbwe!App")
+    check("解析带出来源 aumid", m.aumid, "Microsoft.YourPhone_8wekyb3d8bbwe!App")
+    m = parse_notification(["任务已完成", "装好了"], 31, "WorkBuddy AI",
+                           "WorkBuddy.WorkBuddyAI")
+    check("通用解析也带 aumid", m.aumid, "WorkBuddy.WorkBuddyAI")
+
     # 手机连接下面的子项：勾哪个手机 App 就收哪个
     known = ["微信", "QQ", "快捷指令"]
     w.set_enabled_apps(cfgmod.default_apps())
@@ -234,6 +244,12 @@ def test_config() -> None:
           ["微信", "QQ"])
     check("手机App全不勾保留", cfgmod.normalize({"phone_apps": []})["phone_apps"], [])
     check("手机App脏值回落不过滤", cfgmod.normalize({"phone_apps": "微信"})["phone_apps"], None)
+
+    # 点击行为从「打开微信」改成「唤起来源应用」，旧键名要能迁过来
+    check("旧键名迁移", cfgmod.normalize({"click_to_open_wechat": False})["click_to_open_source"], False)
+    check("新键名优先",
+          cfgmod.normalize({"click_to_open_wechat": False, "click_to_open_source": True})
+          ["click_to_open_source"], True)
 
     # 设置面板左栏宽度（中间分割线位置）
     check("左栏宽度默认", cfgmod.DEFAULT_CONFIG["left_width"], 540)
@@ -445,6 +461,65 @@ def test_tooltip() -> None:
     check("不是 span", "<span" not in html, True)
 
 
+def test_opener() -> None:
+    print("[唤起] 点击卡片按来源分派")
+    # 不打桩会真的去开应用，这里把三个底层动作换掉，只看分派对不对
+    calls: list[tuple] = []
+    real_activate, real_wechat, real_title = (
+        opener._activate_by_aumid, wechat.open_wechat, opener._focus_window_by_title
+    )
+    opener._activate_by_aumid = lambda a: calls.append(("activate", a)) or True
+    opener._focus_window_by_title = lambda n: calls.append(("title", n)) or True
+    wechat.open_wechat = lambda: calls.append(("wechat",)) or True
+    try:
+        phone = "Microsoft.YourPhone_8wekyb3d8bbwe!App"
+        calls.clear()
+        check("手机连接能打开", opener.open_source(phone, "手机连接"), True)
+        check("手机连接走激活", calls[0][0], "activate")
+        check("打开的是手机连接本体", calls[0][1], opener.PHONE_LINK_AUMID)
+
+        calls.clear()
+        opener.open_source("Tencent.WeChat", "微信")
+        check("PC 微信走窗口唤醒", calls[0][0], "wechat")
+
+        calls.clear()
+        opener.open_source("WorkBuddy.WorkBuddyAI", "WorkBuddy")
+        check("其它应用走激活", calls[0][0], "activate")
+        check("激活用的是来源 AUMID", calls[0][1], "WorkBuddy.WorkBuddyAI")
+
+        # 激活失败时退回按窗口标题找
+        opener._activate_by_aumid = lambda a: calls.append(("activate-fail", a)) or False
+        calls.clear()
+        check("激活失败退回标题匹配", opener.open_source("Foo.Bar", "某软件"), True)
+        check("标题用的是显示名", calls[-1], ("title", "某软件"))
+
+        # 全都失败要静默返回 False，不抛异常
+        opener._focus_window_by_title = lambda n: False
+        check("认不出来静默失败", opener.open_source("", ""), False)
+    finally:
+        opener._activate_by_aumid = real_activate
+        opener._focus_window_by_title = real_title
+        wechat.open_wechat = real_wechat
+
+
+def test_click() -> None:
+    print("[点击] 卡片回调带上来源消息")
+    cfg = cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG))
+    got: list = []
+    msg = WeChatMessage("产品研发群", "张伟", "内容", time.time(), 1,
+                        app="手机连接", aumid="Microsoft.YourPhone_8wekyb3d8bbwe!App")
+    t = Toast(msg, cfg, on_open=lambda m: got.append(m))
+    check("消息带 aumid", t.msg.aumid, "Microsoft.YourPhone_8wekyb3d8bbwe!App")
+    t.on_open(t.msg)
+    check("回调收到消息对象", got and got[0] is msg, True)
+
+    # 关掉开关时不该触发（开关读的是 click_to_open_source）
+    check("开关键名已改名", cfg.get("click_to_open_source"), True)
+    check("旧键名不再存在", "click_to_open_wechat" in cfg, False)
+    t.close()
+    t.deleteLater()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     test_parse()
@@ -455,6 +530,8 @@ def main() -> int:
     test_guide()
     test_tooltip()
     test_migrate()
+    test_opener()
+    test_click()
     test_toast(app)
 
     print()

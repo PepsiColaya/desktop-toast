@@ -55,6 +55,7 @@ class WeChatMessage:
     received_at: float
     notif_id: int
     app: str = ""        # 来源应用显示名，如「微信」「Microsoft Store」
+    aumid: str = ""      # 来源应用标识，点击卡片时用来唤起对应应用
 
     @property
     def is_wechat(self) -> bool:
@@ -141,7 +142,7 @@ def _appinfo_available() -> bool:
 
 
 def parse_notification(texts: list[str], notif_id: int,
-                       app_name: str = "") -> Optional[WeChatMessage]:
+                       app_name: str = "", aumid: str = "") -> Optional[WeChatMessage]:
     """把一条 Toast 的文本行解析成消息对象；解析不出来返回 None。
 
     微信是「应用名 / 会话名 / 发送者 : 正文」三段式，
@@ -151,11 +152,12 @@ def parse_notification(texts: list[str], notif_id: int,
         return None
 
     if _looks_like_wechat(app_name) or _looks_like_wechat(texts[0]):
-        return _parse_wechat(texts, notif_id, app_name)
-    return _parse_generic(texts, notif_id, app_name)
+        return _parse_wechat(texts, notif_id, app_name, aumid)
+    return _parse_generic(texts, notif_id, app_name, aumid)
 
 
-def _parse_wechat(texts: list[str], notif_id: int, app_name: str) -> Optional[WeChatMessage]:
+def _parse_wechat(texts: list[str], notif_id: int, app_name: str,
+                  aumid: str = "") -> Optional[WeChatMessage]:
     if len(texts) < 2:
         return None
 
@@ -180,10 +182,12 @@ def _parse_wechat(texts: list[str], notif_id: int, app_name: str) -> Optional[We
         received_at=time.time(),
         notif_id=notif_id,
         app=app_name or "微信",
+        aumid=aumid,
     )
 
 
-def _parse_generic(texts: list[str], notif_id: int, app_name: str) -> Optional[WeChatMessage]:
+def _parse_generic(texts: list[str], notif_id: int, app_name: str,
+                   aumid: str = "") -> Optional[WeChatMessage]:
     source = texts[0]
     content = "\n".join(t for t in texts[1:] if t)
 
@@ -194,6 +198,7 @@ def _parse_generic(texts: list[str], notif_id: int, app_name: str) -> Optional[W
         received_at=time.time(),
         notif_id=notif_id,
         app=app_name or source,
+        aumid=aumid,
     )
 
 
@@ -427,7 +432,7 @@ class WeChatWatcher:
                       aumid, app_name, texts[0])
             return
 
-        msg = parse_notification(texts, n.id, app_name or aumid)
+        msg = parse_notification(texts, n.id, app_name or aumid, aumid)
         if msg is None:
             return
         if msg.source in self._ignore_sources:
