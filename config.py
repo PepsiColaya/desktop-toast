@@ -71,8 +71,13 @@ DEFAULT_CONFIG: dict = {
     #   []    = 一个都不收
     #   [...] = 只收这些手机 App（微信 / QQ / 电话…）
     "phone_apps": None,
-    # 从手机通知首行学到的 App 名，补注册表那份列表的漏
+    # 已知手机 App 名：注册表那份 + 用户在设置里手动添加的（补注册表没收录的
+    # 企业自建应用）。只用于判断「通知首行是不是某个已知 App」。
+    # 不再自动从首行学——手机 QQ / 微信的通知首行是联系人名，学会把好友名
+    # 混进名单，反而把聊天消息全挡掉。见 watcher._phone_app_allowed。
     "phone_known": [],
+    # 一次性迁移标记：清掉旧版自动学到的 phone_known 脏数据
+    "phone_known_cleaned": False,
     # AUMID -> 中文名 的学习缓存，运行时从通知里自动补全
     "app_names": {},
     # ---- 启动 ----
@@ -258,11 +263,16 @@ def _normalize_phone_apps(raw):
 
 
 def _normalize_phone_known(raw):
-    """清洗「见过的手机 App 名」缓存。
+    """清洗「已知手机 App 名」：用户在设置里手动添加的那份。
 
-    注册表里那份列表会漏：有的 App 通知首行的名字和注册表标签对不上
-    （包名 net.colorfulclouds.app.pro 在注册表里叫「心光」，通知里叫「彩云天气Pro」），
-    有的是企业自建应用压根没注册。所以运行时从通知首行学一份，存下来。
+    旧版（到 2026-10-24 之前）会从通知首行**自动学**名字，而手机 QQ / 微信
+    这类聊天应用转发来的通知首行是联系人名，学进去的全是好友名
+    （实测 ['哦吼√']）。名单里混着好友名不会只是难看——精确命中名单又不在
+    勾选范围内，那个好友的聊天消息会被直接挡掉。
+
+    这里做一次性清理：没打标记的老配置整份清空，之后只保留用户手动添加的。
+    注册表里已有的 App 不需要这份名单，真正会丢的只是没注册的企业应用，
+    设置界面提供手动添加入口，加回来只要一次粘贴。
     """
     if not isinstance(raw, list):
         return []
@@ -322,6 +332,13 @@ def normalize(cfg: dict) -> dict:
     out["enabled_apps"] = _normalize_apps(out.get("enabled_apps"))
     out["app_names"] = _normalize_app_names(out.get("app_names"))
     out["phone_apps"] = _normalize_phone_apps(out.get("phone_apps"))
+
+    # 一次性迁移：清掉旧版自动学到的 phone_known（里面混着好友名）。
+    # 打标之后这份名单就只装用户手动添加的条目，迁移不会重复执行。
+    if not out.get("phone_known_cleaned"):
+        out["phone_known"] = []
+        out["phone_known_cleaned"] = True
+
     out["phone_known"] = _normalize_phone_known(out.get("phone_known"))
 
     # 头像目录留空时落到配置目录下的 avatars

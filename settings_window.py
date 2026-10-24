@@ -131,6 +131,7 @@ QTreeWidget::item:hover { background: #F2FBF6; }
 QTreeWidget::item:selected { background: #E8F8EF; color: #07A050; }
 QTreeWidget::branch { background: transparent; }
 QPushButton#mini { padding: 5px 12px; font-size: 12px; }
+QPushButton[mini="true"] { padding: 5px 12px; font-size: 12px; }
 /* 中间分割线：平时是浅灰细线，悬停变绿提示可以抓；
    宽度 3px 是抓取热区，太细会很难对准 */
 QSplitter::handle:horizontal {
@@ -506,6 +507,35 @@ class SettingsWindow(QWidget):
         self.tree_apps.itemChanged.connect(self._on_app_item_changed)
         lay.addWidget(self.tree_apps)
 
+        # 手动添加手机 App：注册表没收录的（企业自建应用）才拦得住，
+        # 加进来之后它才会出现在「手机连接」的子项里，取消勾选即可屏蔽。
+        # 聊天应用（QQ / 微信）不用加——它们转发来的通知首行是联系人名，
+        # 压根没有 App 名，拦不住也不该拦（见 watcher._phone_app_allowed）。
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.ed_phone_add = QLineEdit()
+        self.ed_phone_add.setPlaceholderText("手动添加手机 App 名（仅注册表没收录的才需要）")
+        self.ed_phone_add.setClearButtonEnabled(True)
+        self.ed_phone_add.returnPressed.connect(self._add_phone_app)
+        row.addWidget(self.ed_phone_add, 1)
+        btn_add = QPushButton("添加")
+        btn_add.setProperty("mini", True)     # QSS 属性选择器，objectName 留给测试定位
+        btn_add.setObjectName("phone-add")    # 和免打扰那组重名，靠 objectName 区分
+        btn_add.setToolTip(tooltip_html(
+            "把手机 App 名加进「手机连接」的子项",
+            "只有注册表里没收录的 App 才需要手动加",
+            "加完之后在列表里取消勾选即可屏蔽它",
+        ))
+        btn_add.clicked.connect(self._add_phone_app)
+        row.addWidget(btn_add)
+        btn_del = QPushButton("移除选中")
+        btn_del.setProperty("mini", True)
+        btn_del.setObjectName("phone-del")
+        btn_del.setToolTip(tooltip_html("从名单里移除手动添加的手机 App"))
+        btn_del.clicked.connect(self._remove_phone_app)
+        row.addWidget(btn_del)
+        lay.addLayout(row)
+
         self.lb_apps_hint = QLabel()
         self.lb_apps_hint.setObjectName("hint")
         self.lb_apps_hint.setWordWrap(True)
@@ -532,11 +562,11 @@ class SettingsWindow(QWidget):
         self._flash_saved(f"已刷新：{n} 个应用" if n else "已刷新：没读到应用")
 
     def _phone_labels(self) -> list[tuple[str, str]]:
-        """「手机连接」下面要列的手机 App：注册表那份 + 从通知里学到的。
+        """「手机连接」下面要列的手机 App：注册表那份 + 用户手动添加的。
 
-        注册表会漏——有的 App 通知首行的名字和注册表标签对不上
-        （包名 net.colorfulclouds.app.pro 在注册表里叫「心光」，通知里叫「彩云天气Pro」），
-        企业自建应用还可能压根没注册。学到的那些没有 AUMID，第二个字段留空。
+        注册表会漏——有的 App 是企业自建应用，压根没注册进来，通知首行
+        出现的名字在名单里找不到。这种可以在列表下方的输入框手动添加，
+        加进来才能取消勾选屏蔽它。
         """
         rows = list(apps.phone_link_apps())
         seen = {label for label, _ in rows}
@@ -547,21 +577,36 @@ class SettingsWindow(QWidget):
         rows.sort(key=lambda r: (r[0].lower(), r[1]))
         return rows
 
-    def refresh_phone_apps(self, learned: str = ""):
-        """运行中学到新的手机 App 时把列表补上。
-
-        窗口没开就不用管——下次打开会从配置里重读。
-        ``learned`` 是刚学到的名字，先并进自己这份配置再重建列表，
-        否则重建出来还是旧的那份。
-        """
-        if not self.isVisible():
+    def _add_phone_app(self):
+        """把手动输入的手机 App 名加进 phone_known，重建子项列表。"""
+        name = self.ed_phone_add.text().strip()
+        if not name:
             return
-        if learned:
-            known = list(self._cfg.get("phone_known") or [])
-            if learned not in known:
-                known.append(learned)
-            self._cfg["phone_known"] = known
+        known = list(self._cfg.get("phone_known") or [])
+        if name in known:
+            self._flash_saved(f"「{name}」已经在名单里")
+            return
+        known.append(name)
+        self._cfg["phone_known"] = known
+        self.ed_phone_add.clear()
         self._reload_apps()
+        self._flash_saved(f"已添加「{name}」，取消勾选即可屏蔽")
+
+    def _remove_phone_app(self):
+        """移除当前选中的手动添加子项（注册表里的不给移，移了也没意义）。"""
+        item = self.tree_apps.currentItem()
+        if item is None or item.parent() is None:
+            self._flash_saved("请先选中「手机连接」下面要移除的子项")
+            return
+        name = str((item.data(0, Qt.UserRole) or {}).get("name") or "")
+        known = list(self._cfg.get("phone_known") or [])
+        if name not in known:
+            self._flash_saved("这一项来自系统注册表，不能手动移除")
+            return
+        known.remove(name)
+        self._cfg["phone_known"] = known
+        self._reload_apps()
+        self._flash_saved(f"已移除「{name}」")
 
     def _reload_apps(self):
         """列出本机通知设置里的应用，并标出哪些在监听名单里。
@@ -636,7 +681,7 @@ class SettingsWindow(QWidget):
                     ch.setToolTip(0, tooltip_html(
                         shown,
                         "来自「手机连接」转发",
-                        f"标识：{paumid or '（从通知首行学到，注册表里没有）'}",
+                        f"标识：{paumid or '（手动添加，注册表里没有）'}",
                     ))
                     ch.setFlags(ch.flags() | Qt.ItemIsUserCheckable)
                     on = phone_picked is None or label in phone_picked
@@ -892,7 +937,8 @@ class SettingsWindow(QWidget):
         row.addWidget(self.ed_ignore, 1)
 
         btn_add = QPushButton("添加")
-        btn_add.setObjectName("mini")
+        btn_add.setProperty("mini", True)      # QSS 属性选择器，objectName 留给测试定位
+        btn_add.setObjectName("ignore-add")    # 和手机 App 那组重名，靠 objectName 区分
         btn_add.clicked.connect(self._add_ignore)
         row.addWidget(btn_add)
         lay.addLayout(row)
@@ -916,7 +962,8 @@ class SettingsWindow(QWidget):
         col = QVBoxLayout()
         col.setSpacing(4)
         btn_del = QPushButton("移除选中")
-        btn_del.setObjectName("mini")
+        btn_del.setProperty("mini", True)
+        btn_del.setObjectName("ignore-del")    # 同上，靠 objectName 区分
         btn_del.clicked.connect(self._remove_ignore)
         col.addWidget(btn_del)
         col.addStretch(1)

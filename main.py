@@ -40,8 +40,6 @@ class Bridge(QObject):
     denied = Signal()
     # 学到新的 AUMID -> 应用名，用于把设置界面里的英文名换成中文名
     app_learned = Signal(str, str)
-    # 从手机通知首行学到新的手机 App 名，补进设置界面的子项列表
-    phone_app_learned = Signal(str)
 
 
 def ensure_single_instance() -> bool:
@@ -203,7 +201,11 @@ def main() -> int:
 
     # ---------- 配置应用 ----------
     def phone_known_names() -> list[str]:
-        """已知的手机 App 名：注册表那份 + 运行时从通知首行学到的。"""
+        """已知手机 App 名：注册表那份 + 用户在设置里手动添加的。
+
+        这份名单只用来判断「通知首行是不是某个已知 App」。对不上的一律放行——
+        手机 QQ / 微信的通知首行是联系人名，按 App 名拦会把聊天消息全挡掉。
+        """
         names = [label for label, _ in apps.phone_link_apps()]
         for n in cfg.get("phone_known", []) or []:
             if n not in names:
@@ -296,26 +298,10 @@ def main() -> int:
         # 走到这里就直接存。
         _learn_save_timer.stop()
         if cfgmod.save(cfg):
-            log.info("学习缓存已保存：应用名 %d 条，手机 App %d 个",
-                     len(cfg.get("app_names", {})), len(cfg.get("phone_known", []) or []))
+            log.info("学习缓存已保存：应用名 %d 条", len(cfg.get("app_names", {})))
 
     _learn_save_timer.timeout.connect(flush_learned)
     bridge.app_learned.connect(on_app_learned)
-
-    # 手机连接转发的通知首行就是手机 App 名。注册表那份列表会漏
-    # （名字对不上、企业自建应用没注册），学到就补进配置，设置界面能勾选。
-    def on_phone_app_learned(name: str):
-        known = list(cfg.get("phone_known", []) or [])
-        if not name or name in known:
-            return
-        known.append(name)
-        cfg["phone_known"] = known
-        if watcher is not None:
-            watcher.set_phone_known(phone_known_names())
-        settings.refresh_phone_apps(name)
-        _learn_save_timer.start()
-
-    bridge.phone_app_learned.connect(on_phone_app_learned)
 
     watcher = WeChatWatcher(
         on_message=bridge.message.emit,
@@ -326,7 +312,6 @@ def main() -> int:
         on_app_learned=bridge.app_learned.emit,
         phone_apps=cfg.get("phone_apps"),
         phone_known=phone_known_names(),
-        on_phone_app_learned=bridge.phone_app_learned.emit,
     )
     watcher.start()
 

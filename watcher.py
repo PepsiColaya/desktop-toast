@@ -217,7 +217,6 @@ class WeChatWatcher:
         on_app_learned: Optional[Callable[[str, str], None]] = None,
         phone_apps: Optional[list[str]] = None,
         phone_known: Optional[list[str]] = None,
-        on_phone_app_learned: Optional[Callable[[str], None]] = None,
     ):
         self._on_message = on_message
         self._on_status = on_status or (lambda s: None)
@@ -231,10 +230,11 @@ class WeChatWatcher:
         self._phone_apps = None if phone_apps is None else {
             str(x).strip().lower() for x in phone_apps if str(x).strip()
         }
-        # 本机手机连接正在转发的手机 App 名，用来判断首行认不认得出来
+        # 已知手机 App 名：注册表那份 + 用户在设置里手动添加的。
+        # 只用来判断「这条通知的首行是不是某个已知 App」，不自动扩充——
+        # 手机 QQ / 微信这类聊天应用，通知首行是联系人名而不是 App 名，
+        # 自动学只会把好友名混进名单（见 _phone_app_allowed 的注释）。
         self._phone_known = {str(x).strip().lower() for x in (phone_known or []) if str(x).strip()}
-        # 从通知首行学到新的手机 App 名时回调，供设置界面补进列表
-        self._on_phone_app_learned = on_phone_app_learned
 
         self._seen: OrderedDict[int, str] = OrderedDict()
         self._recent: OrderedDict[str, float] = OrderedDict()
@@ -338,10 +338,15 @@ class WeChatWatcher:
     def _phone_app_allowed(self, texts: list[str]) -> bool:
         """手机转发来的这条通知，对应的手机 App 是否在勾选范围内。
 
-        名单是白名单：勾了哪些就只收哪些。认不出来的不再无条件放行——
-        那样「只勾微信」就成了空话，手机上随便哪个 App 都能弹出来。
-        认不出来的会在到达时被记进 phone_known（见 _learn_phone_app），
-        所以第一次之后就能在设置里看到并单独勾选。
+        判定分两段：
+        1. 首行对得上已知名单（注册表 + 手动添加）→ 按勾选状态管，没勾的不弹；
+        2. 对不上 → 放行。
+
+        第 2 段是必须的：手机 QQ / 微信这类聊天应用，转发来的通知首行是
+        **联系人名**（实测手机 QQ 是 ['哦吼√', '11']，两行里根本没有「QQ」），
+        任何「认不出来就拦」的策略都会把聊天消息全挡掉。宁可多弹，不漏消息。
+        代价是名单外的 App（企业自建、新装的）管不住——可以在设置里
+        手动把它的名字加进名单，再取消勾选就能屏蔽。
         """
         if self._phone_apps is None:
             return True
@@ -361,31 +366,12 @@ class WeChatWatcher:
         cands = [l for l in self._phone_known if l and (l in first or first in l)]
         if cands:
             return max(cands, key=len) in self._phone_apps
-        return False
+        # 认不出来（好友名、没注册的 App）：放行，见上面第 2 段
+        return True
 
     def _is_phone_source(self, aumid: str, app_name: str) -> bool:
         hay = f"{aumid or ''} {app_name or ''}".lower()
         return any(h in hay for h in PHONE_LINK_HINTS)
-
-    def _learn_phone_app(self, name: str) -> None:
-        """从通知首行学一个手机 App 名。
-
-        注册表那份列表会漏（名字对不上、企业自建应用没注册），
-        这里按真实通知补，学到就回调给主程序存进配置。
-        """
-        name = (name or "").strip()
-        if not name or len(name) > 40:
-            return
-        low = name.lower()
-        if low in self._phone_known:
-            return
-        self._phone_known.add(low)
-        log.info("学到手机 App 名: %s", name)
-        if self._on_phone_app_learned is not None:
-            try:
-                self._on_phone_app_learned(name)
-            except Exception as e:
-                log.debug("手机 App 名学习回调失败: %s", e)
 
     # ---------- 主循环 ----------
     def _learn_app_name(self, aumid: str, app_name: str) -> None:
@@ -438,12 +424,6 @@ class WeChatWatcher:
             for n in await listener.get_notifications_async(NotificationKinds.TOAST):
                 texts = _extract_texts(n)
                 self._seen[n.id] = "|".join(texts)
-                # 顺手把历史里的手机 App 名学一遍：白名单要勾得上，
-                # 就得先把名字凑齐，否则升级后第一次收到的 App 会被默默挡掉
-                if texts:
-                    aumid, name = app_identity(n)
-                    if self._is_phone_source(aumid, name):
-                        self._learn_phone_app(texts[0])
             log.info("基线建立完成，已有 %d 条通知", len(self._seen))
         except Exception as e:
             log.warning("建立通知基线失败: %s", e)
@@ -482,10 +462,6 @@ class WeChatWatcher:
 
         aumid, app_name = app_identity(n)
         self._learn_app_name(aumid, app_name)
-        # 手机转发来的先学首行的 App 名，再判过滤：
-        # 这样新 App 第一次到达就能被记进名单，之后勾不勾才管得住
-        if self._is_phone_source(aumid, app_name):
-            self._learn_phone_app(texts[0])
         if not self.app_enabled(aumid, app_name, texts):
             log.debug("应用不在监听范围，已跳过: aumid=%r name=%r text0=%r",
                       aumid, app_name, texts[0])

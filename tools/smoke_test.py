@@ -188,21 +188,28 @@ def test_multi_app() -> None:
           w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), False)
     check("只勾微信时快捷指令被挡",
           w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), False)
-    check("白名单模式下认不出的手机 App 不放行",
+    # 认不出来的一律放行：手机 QQ / 微信的通知首行是联系人名，根本没有 App 名，
+    # 拿「认不出来就拦」会把聊天消息全挡掉。这里必须是 True。
+    check("白名单模式下认不出的手机 App 也放行",
+          w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), True)
+    check("好友名（手机 QQ 首行）放行",
+          w.app_enabled(phone, "手机连接", ["哦吼√", "11"]), True)
+    # 手动把名字加进 known 之后才按勾选管：注册表没收录的企业应用靠这个屏蔽
+    w.set_phone_apps(["微信"], known + ["某新App"])
+    check("手动添加后仍按勾选挡",
           w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), False)
-    # 学到的名字能补上：先学，再判，就能按勾选放行
-    w._learn_phone_app("某新App")
-    check("学到的名字进 known", "某新app" in w._phone_known, True)
-    check("学到之后仍按勾选挡",
-          w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), False)
-    w.set_phone_apps(["微信", "某新App"])      # 不传 known，保留刚学到的
+    w.set_phone_apps(["微信", "某新App"], known + ["某新App"])
     check("勾上之后就放行",
           w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), True)
     w.set_phone_apps([], known)
     check("全不勾时手机通知全挡",
           w.app_enabled(phone, "手机连接", ["微信", "示例联系人", "好的"]), False)
-    check("全不勾时认不出的手机 App 也挡",
-          w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), False)
+    check("全不勾时好友名也挡（用户明说一个都不收）",
+          w.app_enabled(phone, "手机连接", ["哦吼√", "11"]), False)
+    # 恢复勾选后好友名照常放行
+    w.set_phone_apps(["微信"], known)
+    check("有勾选时好友名放行",
+          w.app_enabled(phone, "手机连接", ["哦吼√", "11"]), True)
 
     # 取消「手机连接」后，勾着的同名 PC 应用不能把手机通知顶回来
     # （PC 版 QQ 的匹配串就是 qq，手机 QQ 的首行也叫 QQ）
@@ -221,19 +228,18 @@ def test_multi_app() -> None:
     check("子项勾上 QQ 时放行手机 QQ",
           w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), True)
 
-    # 走一遍真实入口 _handle：学到名字必须发生在过滤之前，
-    # 否则新 App 第一次到达会因为「认不出来」被放行，白名单就形同虚设
-    learned: list[str] = []
+    # 走一遍真实入口 _handle：好友名不能被学进 known（那是手机 QQ 的发送者，
+    # 学进去之后这个好友的消息会被精确命中名单又不在勾选范围，直接挡掉），
+    # 也不能被过滤挡住
     got: list = []
     w2 = WeChatWatcher(
         on_message=got.append,
         enabled_apps=cfgmod.default_apps(),
         phone_apps=["微信"],
         phone_known=["微信"],
-        on_phone_app_learned=learned.append,
     )
     real_extract, real_ident = watcher_mod._extract_texts, watcher_mod.app_identity
-    watcher_mod._extract_texts = lambda n: ["彩云天气Pro", "预警订阅", "大风蓝色预警"]
+    watcher_mod._extract_texts = lambda n: ["哦吼√", "11"]
     watcher_mod.app_identity = lambda n: (phone, "手机连接")
 
     class FakeNotif:
@@ -242,13 +248,17 @@ def test_multi_app() -> None:
 
     try:
         w2._handle(FakeNotif(101))
-        check("第一次到达就学到名字", learned, ["彩云天气Pro"])
-        check("不在白名单所以不弹", got, [])
-
-        w2.set_phone_apps(["微信", "彩云天气Pro"])     # 保留刚学到的 known
+        check("好友名没被学进 known", w2._phone_known, {"微信"})
+        check("好友名消息放行", len(got), 1)
+        check("弹出来源是手机连接", got[0].app if got else "", "手机连接")
+        # 已知 App 仍然按白名单管：彩云天气Pro 要在 known 里才管得住
+        watcher_mod._extract_texts = lambda n: ["彩云天气Pro", "预警订阅", "大风蓝色预警"]
+        w2.set_phone_apps(["微信"], ["微信", "彩云天气Pro"])
         w2._handle(FakeNotif(102))
-        check("勾上之后弹出来", len(got), 1)
-        check("弹的是这个 App", got[0].app if got else "", "手机连接")
+        check("不在白名单的已知 App 仍被挡", len(got), 1)
+        w2.set_phone_apps(["微信", "彩云天气Pro"], ["微信", "彩云天气Pro"])
+        w2._handle(FakeNotif(103))
+        check("勾上之后弹出来", len(got), 2)
     finally:
         watcher_mod._extract_texts, watcher_mod.app_identity = real_extract, real_ident
 
@@ -306,6 +316,17 @@ def test_config() -> None:
           ["微信", "QQ"])
     check("手机App全不勾保留", cfgmod.normalize({"phone_apps": []})["phone_apps"], [])
     check("手机App脏值回落不过滤", cfgmod.normalize({"phone_apps": "微信"})["phone_apps"], None)
+
+    # phone_known 一次性迁移：旧版自动学到的名单里混着好友名（手机 QQ 首行是
+    # 发送者），整份清掉，之后只保留用户手动添加的
+    dirty = {"phone_known": ["昆仑智联（私有化版）", "哦吼√"]}
+    once = cfgmod.normalize(dirty)
+    check("迁移清掉学到的脏数据", once["phone_known"], [])
+    check("迁移打了标记", once["phone_known_cleaned"], True)
+    # 第二次加载保留手动添加的条目
+    twice = cfgmod.normalize({"phone_known": ["昆仑智联（私有化版）"],
+                              "phone_known_cleaned": True})
+    check("迁移后手动添加的保留", twice["phone_known"], ["昆仑智联（私有化版）"])
 
     # 点击行为从「打开微信」改成「唤起来源应用」，旧键名要能迁过来
     check("旧键名迁移", cfgmod.normalize({"click_to_open_wechat": False})["click_to_open_source"], False)
@@ -656,7 +677,7 @@ def test_apps_tree() -> None:
         w._collect()
         check("取消手机连接后名单为空", w._cfg.get("enabled_apps"), [])
 
-        # 注册表里没有、但从通知首行学到的手机 App 也要出现在子项里
+        # 手动添加的手机 App（注册表里没有）也要出现在子项里
         w._cfg["phone_known"] = ["彩云天气Pro"]
         w._cfg["enabled_apps"] = cfgmod.default_apps()
         w._reload_apps()
@@ -665,7 +686,57 @@ def test_apps_tree() -> None:
             if w.tree_apps.topLevelItem(i).text(0) == "手机连接":
                 row = w.tree_apps.topLevelItem(i)
         kids2 = [row.child(j).text(0) for j in range(row.childCount())] if row else []
-        check("学到的手机 App 进了列表", "彩云天气Pro" in kids2, True)
+        check("手动添加的手机 App 进了列表", "彩云天气Pro" in kids2, True)
+
+        # 手动添加走输入框入口：输入名字 -> 进配置 -> 列表多一行
+        w.ed_phone_add.setText("昆仑智联（私有化版）")
+        w.findChild(QPushButton, "phone-add").click()
+        check("添加后进了配置", "昆仑智联（私有化版）" in (w._cfg.get("phone_known") or []), True)
+        row = None
+        for i in range(w.tree_apps.topLevelItemCount()):
+            if w.tree_apps.topLevelItem(i).text(0) == "手机连接":
+                row = w.tree_apps.topLevelItem(i)
+        kids3 = [row.child(j).text(0) for j in range(row.childCount())] if row else []
+        check("添加后列表多一行", "昆仑智联（私有化版）" in kids3, True)
+        check("输入框已清空", w.ed_phone_add.text(), "")
+
+        # 重复添加不重复入列
+        w.ed_phone_add.setText("昆仑智联（私有化版）")
+        w.findChild(QPushButton, "phone-add").click()
+        check("重复添加只留一份",
+              (w._cfg.get("phone_known") or []).count("昆仑智联（私有化版）"), 1)
+
+        # 移除选中：选中的手动条目能删，注册表里的不给删
+        # 注意 _reload_apps 会清空树，每次操作前都要重新取 item，
+        # 否则拿到的是已销毁的 C++ 对象
+        def find_phone_row():
+            for i in range(w.tree_apps.topLevelItemCount()):
+                top = w.tree_apps.topLevelItem(i)
+                if top.text(0) == "手机连接":
+                    return top
+            return None
+
+        def find_child(label):
+            r = find_phone_row()
+            for j in range(r.childCount()):
+                if r.child(j).text(0) == label:
+                    return r.child(j)
+            return None
+
+        w.tree_apps.setCurrentItem(find_child("昆仑智联（私有化版）"))
+        w.findChild(QPushButton, "phone-del").click()
+        check("移除后离开配置",
+              "昆仑智联（私有化版）" not in (w._cfg.get("phone_known") or []), True)
+        check("手动加的彩云天气Pro 还在",
+              "彩云天气Pro" in (w._cfg.get("phone_known") or []), True)
+        check("移除后列表也没这行了", find_child("昆仑智联（私有化版）") is None, True)
+        # 注册表里的条目（有真实 AUMID）不在 phone_known，移除应被拒绝
+        # 注意子项显示名可能带「（手机）」后缀（PC 端有同名应用时）
+        qq = find_child("QQ") or find_child("QQ（手机）")
+        check("先找到 QQ 子项", qq is not None, True)
+        w.tree_apps.setCurrentItem(qq)
+        w.findChild(QPushButton, "phone-del").click()
+        check("注册表条目不被移除", qq is not None, True)
     finally:
         (apps.list_notification_apps, apps.resolve_name, apps.phone_link_apps,
          apps.phone_link_status, autostart.is_enabled) = real
@@ -716,8 +787,13 @@ def test_buttons() -> None:
             return []
 
         texts = sorted(b.text() for b in w.findChildren(QPushButton))
+        # 手机 App 手动添加/移除和免打扰那组按钮文字重名，靠 objectName 区分
+        check("手动添加入口存在", w.findChild(QPushButton, "phone-add") is not None, True)
+        check("手动移除入口存在", w.findChild(QPushButton, "phone-del") is not None, True)
+        # 清单里「添加」「移除选中」各出现两次（免打扰一组 + 手机 App 一组）
         check("按钮清单", texts, sorted(["恢复默认", "在桌面试一下", "完成", "刷新",
-                                      "重新检测", "查看配置教程", "添加", "移除选中", "打开目录"]))
+                                      "重新检测", "查看配置教程", "添加", "移除选中",
+                                      "打开目录", "添加", "移除选中"]))
 
         # 1. 刷新：重新读注册表，并给一句反馈
         state["apps"] = [phone_aumid, "QQ", "Outlook"]
@@ -747,11 +823,12 @@ def test_buttons() -> None:
 
         # 5. 免打扰：添加 / 移除
         w.ed_ignore.setText("示例群")
-        btn("添加").click()
+        # 和手机 App 那组按钮文字重名，按 objectName 定位
+        w.findChild(QPushButton, "ignore-add").click()
         check("添加进了列表", w.lst_ignore.count(), 1)
         check("输入框已清空", w.ed_ignore.text(), "")
         w.lst_ignore.item(0).setSelected(True)
-        btn("移除选中").click()
+        w.findChild(QPushButton, "ignore-del").click()
         check("移除生效", w.lst_ignore.count(), 0)
 
         # 6. 打开头像目录
