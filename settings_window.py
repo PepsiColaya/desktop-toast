@@ -621,17 +621,17 @@ class SettingsWindow(QWidget):
             # 列表里只会有系统通知设置里真实存在的应用，认「手机连接」看 aumid 就够
             return apps.is_phone_link_aumid(entry.get("aumid", ""))
 
-        wechat_on = any(is_phone_entry(e) for e in checked)
+        phone_on = any(is_phone_entry(e) for e in checked)
 
-        if pl == "active" and wechat_on:
+        if pl == "active" and phone_on:
             self.lb_apps_hint.setText(
-                "已就绪：微信等手机 App 的消息会经「手机连接」转发进来。"
+                "已就绪：手机上的通知会经「手机连接」转发进来。"
                 "展开「手机连接」还能只勾想收的手机 App。"
             )
         elif pl == "active":
             self.lb_apps_hint.setText(
                 "检测到「手机连接」正在转发手机通知。"
-                "想收到微信消息，请在上面的列表里勾选「手机连接」。"
+                "想收到手机上的消息，请在上面的列表里勾选「手机连接」。"
             )
         elif pl == "installed":
             self.lb_apps_hint.setText(
@@ -640,15 +640,16 @@ class SettingsWindow(QWidget):
             )
         elif pl == "none":
             self.lb_apps_hint.setText(
-                "本机没有检测到「手机连接」。PC 微信自己不发通知，"
-                "想收到微信消息需要先按下方教程配置手机连接。"
+                "本机没有检测到「手机连接」。如果某个手机 App（比如微信）"
+                "自己不往电脑端发通知，就得靠它把手机通知转过来，"
+                "配置方法见下方教程。"
             )
         else:
             self.lb_apps_hint.setText("")
 
     def _build_phonelink(self) -> QGroupBox:
         """手机连接检测 + 配置教程入口。"""
-        box = QGroupBox("手机连接（微信消息来源）")
+        box = QGroupBox("手机连接（手机消息来源）")
         lay = QVBoxLayout(box)
         lay.setSpacing(7)
 
@@ -678,8 +679,8 @@ class SettingsWindow(QWidget):
         status = apps.phone_link_status()
         if status == "none":
             self.lb_phonelink.setText(
-                "未检测到「手机连接」。PC 微信自己不往消息中心发通知，"
-                "需要先在电脑上安装并配对手机连接，微信消息才进得来。"
+                "未检测到「手机连接」。手机上的通知要先经它转发到电脑，本程序才读得到。"
+                "PC 微信就是典型例子——它自己不往消息中心发通知。"
             )
             self.btn_phonelink_guide.setText("查看安装配对教程")
         elif status == "installed":
@@ -697,7 +698,7 @@ class SettingsWindow(QWidget):
                     names = names[:60].rstrip("、") + "…"
                 tail = f"\n正在转发 {len(phones)} 个手机 App：{names}"
             self.lb_phonelink.setText(
-                "「手机连接」工作正常，手机上的微信等 App 通知会转发到电脑。"
+                "「手机连接」工作正常，手机上的 App 通知会转发到电脑。"
                 "在上方「监听应用」里勾选手机连接即可弹卡片。" + tail
             )
             self.btn_phonelink_guide.setText("查看配置教程")

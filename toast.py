@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""微信消息悬浮卡片（Qt 绘制：圆角、阴影、淡入淡出、多条堆叠）。"""
+"""通知悬浮卡片（Qt 绘制：圆角、阴影、淡入淡出、多条堆叠）。"""
 from __future__ import annotations
 
 import os

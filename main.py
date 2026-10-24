@@ -20,7 +20,6 @@ import config as cfgmod
 import logger
 import logo
 import opener
-import wechat
 from settings_window import SettingsWindow
 from toast import Toast, ToastManager
 from watcher import WeChatMessage, WeChatWatcher
@@ -99,8 +98,8 @@ def main() -> int:
     tray.setToolTip(f"{APP_TITLE} · 运行中")
 
     menu = QMenu()
-    act_open = QAction("打开微信", menu)
-    act_open.triggered.connect(wechat.open_wechat)
+    act_open = QAction("打开来源应用", menu)
+    act_open.setEnabled(False)          # 还没收到通知时没东西可打开
     menu.addAction(act_open)
 
     act_settings = QAction("设置…", menu)
@@ -154,11 +153,42 @@ def main() -> int:
 
     act_quit.triggered.connect(quit_app)
 
-    # 单击打开微信、双击打开设置：单击延迟一点，避免双击时先被当成单击
+    # ---------- 最近一条通知的来源 ----------
+    # 托盘菜单和单击图标都按「最近一条通知是谁发的」来唤起，不再写死微信
+    last_source = {"aumid": "", "app": ""}
+
+    def open_last_source() -> bool:
+        if not last_source["app"]:
+            # 还没收到过通知，单击图标就当是打开设置，别让点击变成没反应
+            settings.show_window(cfgmod.load())
+            return False
+        ok = opener.open_source(last_source["aumid"], last_source["app"])
+        if not ok:
+            log.warning("唤起来源应用失败: %s (%s)", last_source["app"], last_source["aumid"])
+            tray.showMessage(
+                APP_TITLE, f"没能打开「{last_source['app']}」，它可能已经退出了",
+                QSystemTrayIcon.Information, 2000,
+            )
+        return ok
+
+    def refresh_open_action():
+        """菜单弹出时刷新文案：把来源应用名带上，没有就置灰。"""
+        if last_source["app"]:
+            act_open.setText(f"打开 {last_source['app']}")
+            act_open.setEnabled(True)
+        else:
+            act_open.setText("打开来源应用")
+            act_open.setEnabled(False)
+
+    menu.aboutToShow.connect(refresh_open_action)
+    act_open.triggered.connect(open_last_source)
+
+    # 单击打开最近通知的来源应用、双击打开设置：
+    # 单击延迟一点，避免双击时先被当成单击
     click_timer = QTimer()
     click_timer.setSingleShot(True)
     click_timer.setInterval(230)
-    click_timer.timeout.connect(wechat.open_wechat)
+    click_timer.timeout.connect(open_last_source)
 
     def on_tray_activated(reason):
         if reason == QSystemTrayIcon.Trigger:          # 单击
@@ -195,7 +225,8 @@ def main() -> int:
             "产品研发群", "张伟",
             "这是一条测试消息，看看现在的效果是否合适", time.time(), 0,
         )
-        t = Toast(msg, test_cfg, on_open=lambda _m: wechat.open_wechat())
+        # 预览卡片没有真实来源，点了只淡出，不去唤起任何应用
+        t = Toast(msg, test_cfg, on_open=lambda _m: None)
         t.closed.connect(lambda x: test_toasts.remove(x) if x in test_toasts else None)
         test_toasts.append(t)
         t.appear()
@@ -208,11 +239,22 @@ def main() -> int:
             settings, "无法读取系统通知",
             "需要允许本程序访问系统通知。\n\n"
             "请打开：设置 → 隐私和安全性 → 通知 → 允许应用访问通知。\n\n"
-            "微信用户请注意：PC 微信自己不往消息中心发通知，"
-            "消息要经「手机连接」转发，配置方法见设置面板里的「手机连接」一栏。",
+            "如果某个软件自己不往消息中心发通知，本程序也读不到它（PC 微信就是"
+            "一个例子）。这类软件可以试试用「手机连接」把手机上的通知转发到电脑，"
+            "配置方法见设置面板里的「手机连接」一栏。",
         )
 
-    bridge.message.connect(lambda m: None if state["paused"] else manager.push(m))
+    def on_message(msg):
+        # 记下最近一条通知是谁发的：托盘菜单和单击图标都靠它唤起来源应用。
+        # 暂停时也记，暂停只是不弹卡片，来源该更新还是要更新。
+        aumid = getattr(msg, "aumid", "") or ""
+        last_source["aumid"] = aumid
+        # 显示名偶尔是空的，退到 AUMID 也比整条菜单置灰强
+        last_source["app"] = (msg.app or "").strip() or aumid
+        if not state["paused"]:
+            manager.push(msg)
+
+    bridge.message.connect(on_message)
     bridge.denied.connect(on_denied)
 
     def on_status(status: str):

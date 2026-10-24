@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""监听 Windows 通知中心，捕获微信（以及用户勾选的其他应用）的新消息。
+"""监听 Windows 通知中心，捕获用户勾选的应用的新消息。
 
-通过 UserNotificationListener 读取通知中心的 Toast，不注入微信进程、不读数据库。
+通过 UserNotificationListener 读取通知中心的 Toast，不注入任何进程、不读它们的数据库。
 
 注意：这条路只对「会把消息推送到 Windows 通知中心」的应用有效。
-微信 4.x 属于不推送的那一类（实测它的通知处理器数为 0），
-具体原因和可选的替代方案见 README 的「微信 4.x 收不到消息」一节。
+PC 微信 4.x 属于不推送的那一类（实测它的通知处理器数为 0），
+具体原因和可选的替代方案见 README 的「案例：微信」一节。
 
-监听哪些应用由 config 的 enabled_apps 决定，默认只有微信。
+监听哪些应用由 config 的 enabled_apps 决定，默认只有「手机连接」
+（手机上的通知经它转发过来，微信等 App 的消息也是这么进来的）。
 """
 from __future__ import annotations
 

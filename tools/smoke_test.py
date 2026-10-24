@@ -520,6 +520,30 @@ def test_click() -> None:
     t.deleteLater()
 
 
+def test_tray() -> None:
+    print("[托盘] 菜单和单击图标跟着最近通知的来源走")
+    # main.py 里的托盘逻辑要 QSystemTrayIcon 才能跑起来，没法在无桌面环境实例化，
+    # 这里退一步做源码级检查：只断言「不该写死微信」和「来源要被更新」这两点。
+    src = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    check("不再硬编码打开微信", "wechat.open_wechat" in src, False)
+    check("不再导入 wechat", "\nimport wechat\n" in src, False)
+    check("菜单项不写死微信", '"打开微信"' in src, False)
+
+    # 这两行缺一个，open_last_source() 就永远拿不到来源、菜单永远置灰
+    check("收到消息时记 aumid", 'last_source["aumid"] =' in src, True)
+    check("收到消息时记应用名", 'last_source["app"] =' in src, True)
+    check("消息走 on_message 处理", "bridge.message.connect(on_message)" in src, True)
+    # 暂停只是不弹卡片，来源还是要更新，否则恢复后打开的是旧应用
+    check("暂停时也记来源", 'if not state["paused"]:' in src, True)
+
+    # 单击/菜单文案要带上真实应用名
+    check("菜单文案带应用名", 'f"打开 {last_source' in src, True)
+    check("没来源时置灰", "act_open.setEnabled(False)" in src, True)
+    # 测试卡片没有真实来源，点了不该唤起任何东西
+    check("测试卡片不唤应用", "on_open=lambda _m: None" in src, True)
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     test_parse()
@@ -532,6 +556,7 @@ def main() -> int:
     test_migrate()
     test_opener()
     test_click()
+    test_tray()
     test_toast(app)
 
     print()
