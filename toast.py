@@ -194,6 +194,10 @@ class Toast(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
 
+        # 整张卡片都能点（打开来源应用），给个手型光标，不然看不出可点
+        if cfg.get("click_to_open_source", True):
+            self.setCursor(Qt.PointingHandCursor)
+
         # ---- 字体 ----
         family = cfg.get("font_family", "Microsoft YaHei UI")
         self.f_title = QFont(family)

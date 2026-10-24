@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QFont, QFontMetrics  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QCheckBox, QPushButton  # noqa: E402
 
 import config as cfgmod  # noqa: E402
 import guide  # noqa: E402
@@ -574,6 +574,7 @@ def test_click() -> None:
     check("消息带 aumid", t.msg.aumid, "Microsoft.YourPhone_8wekyb3d8bbwe!App")
     t.on_open(t.msg)
     check("回调收到消息对象", got and got[0] is msg, True)
+    check("卡片可点时是手型光标", t.cursor().shape(), Qt.PointingHandCursor)
 
     # 关掉开关时不该触发（开关读的是 click_to_open_source）
     check("开关键名已改名", cfg.get("click_to_open_source"), True)
@@ -673,6 +674,123 @@ def test_apps_tree() -> None:
             w.deleteLater()
 
 
+def test_buttons() -> None:
+    print("[按钮] 设置面板每个按钮都得有实际效果")
+    real = (apps.list_notification_apps, apps.resolve_name, apps.phone_link_apps,
+            apps.phone_link_status, autostart.is_enabled, cfgmod.save,
+            guide.open_guide, os.startfile, os.makedirs)
+    phone_aumid = "Microsoft.YourPhone_8wekyb3d8bbwe!App"
+    names = {phone_aumid: "手机连接", "QQ": "QQ", "Outlook": "Outlook"}
+    state = {"apps": [phone_aumid, "QQ"], "status": "installed",
+             "phones": [("微信", "com.tencent.xin")], "saved": 0}
+    opened: list[str] = []
+
+    apps.list_notification_apps = lambda: list(state["apps"])
+    apps.resolve_name = lambda aumid, learned=None: names.get(aumid, aumid)
+    apps.phone_link_apps = lambda: list(state["phones"])
+    apps.phone_link_status = lambda: state["status"]
+    autostart.is_enabled = lambda: False
+    cfgmod.save = lambda c: state.__setitem__("saved", state["saved"] + 1) or True
+    guide.open_guide = lambda status=None: True
+    os.startfile = lambda p: opened.append(str(p))
+    os.makedirs = lambda p, exist_ok=False: None
+
+    w = None
+    try:
+        cfg = cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG))
+        cfg["enabled_apps"] = cfgmod.default_apps()
+        w = SettingsWindow(cfg)
+        w.show()
+
+        def btn(word: str):
+            for b in w.findChildren(QPushButton):
+                if word in b.text():
+                    return b
+            return None
+
+        def kids():
+            for i in range(w.tree_apps.topLevelItemCount()):
+                it = w.tree_apps.topLevelItem(i)
+                if it.text(0) == "手机连接":
+                    return [it.child(j).text(0) for j in range(it.childCount())]
+            return []
+
+        texts = sorted(b.text() for b in w.findChildren(QPushButton))
+        check("按钮清单", texts, sorted(["恢复默认", "在桌面试一下", "完成", "刷新",
+                                      "重新检测", "查看配置教程", "添加", "移除选中", "打开目录"]))
+
+        # 1. 刷新：重新读注册表，并给一句反馈
+        state["apps"] = [phone_aumid, "QQ", "Outlook"]
+        btn("刷新").click()
+        top = [w.tree_apps.topLevelItem(i).text(0)
+               for i in range(w.tree_apps.topLevelItemCount())]
+        check("刷新读到了新应用", "Outlook" in top, True)
+        check("刷新有反馈", w.lb_saved.text(), "已刷新：3 个应用")
+
+        # 2. 重新检测：状态文字 + 手机 App 子项都要跟着变
+        state["status"] = "active"
+        state["phones"] = [("微信", "com.tencent.xin"), ("QQ", "com.tencent.mqq")]
+        btn("重新检测").click()
+        check("重新检测更新状态文字", "工作正常" in w.lb_phonelink.text(), True)
+        check("重新检测补上新手机 App", "QQ（手机）" in kids(), True)
+        check("重新检测有反馈", w.lb_saved.text(), "「手机连接」工作正常")
+
+        # 3. 教程：生成并打开，给一句反馈
+        btn("教程").click()
+        check("教程按钮有反馈", w.lb_saved.text(), "教程已生成")
+
+        # 4. 在桌面试一下：发信号
+        got: list = []
+        w.test_requested.connect(got.append)
+        btn("在桌面试一下").click()
+        check("测试按钮发出信号", len(got), 1)
+
+        # 5. 免打扰：添加 / 移除
+        w.ed_ignore.setText("示例群")
+        btn("添加").click()
+        check("添加进了列表", w.lst_ignore.count(), 1)
+        check("输入框已清空", w.ed_ignore.text(), "")
+        w.lst_ignore.item(0).setSelected(True)
+        btn("移除选中").click()
+        check("移除生效", w.lst_ignore.count(), 0)
+
+        # 6. 打开头像目录
+        opened.clear()
+        btn("打开目录").click()
+        check("打开目录真的调了资源管理器", len(opened), 1)
+
+        # 7. 恢复默认
+        w.sl_width.set_value(500)
+        w._collect()
+        check("先把宽度改掉", w._cfg["card_width"], 500)
+        btn("恢复默认").click()
+        check("恢复默认改回默认值", w._cfg["card_width"], 340)
+        check("恢复默认会落盘", state["saved"] > 0, True)
+
+        # 8. 完成：关窗口
+        btn("完成").click()
+        check("完成隐藏窗口", w.isVisible(), False)
+
+        # 9. 光标：能点的东西都该是手型，不然看不出可点
+        bad = [b.text() for b in w.findChildren(QPushButton)
+               if b.cursor().shape() != Qt.PointingHandCursor]
+        check("按钮都是手型光标", bad, [])
+        bad = [c.text() for c in w.findChildren(QCheckBox)
+               if c.cursor().shape() != Qt.PointingHandCursor]
+        check("复选框都是手型光标", bad, [])
+        check("应用列表是手型光标",
+              w.tree_apps.viewport().cursor().shape(), Qt.PointingHandCursor)
+        check("免打扰列表是手型光标",
+              w.lst_ignore.viewport().cursor().shape(), Qt.PointingHandCursor)
+    finally:
+        (apps.list_notification_apps, apps.resolve_name, apps.phone_link_apps,
+         apps.phone_link_status, autostart.is_enabled, cfgmod.save,
+         guide.open_guide, os.startfile, os.makedirs) = real
+        if w is not None:
+            w.close()
+            w.deleteLater()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     test_parse()
@@ -681,6 +799,7 @@ def main() -> int:
     test_config()
     test_apps()
     test_apps_tree()
+    test_buttons()
     test_guide()
     test_tooltip()
     test_migrate()

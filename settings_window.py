@@ -2,6 +2,7 @@
 """可视化设置面板：左侧调参，右侧实时预览。"""
 from __future__ import annotations
 
+import copy
 import os
 import time
 from typing import Callable, Optional
@@ -434,6 +435,21 @@ class SettingsWindow(QWidget):
         bar.addWidget(btn_close)
         root.addLayout(bar)
 
+        self._apply_cursors()
+
+    def _apply_cursors(self):
+        """所有能点的东西都换成手型光标。
+
+        QSS 里没有 cursor 属性，只能逐个控件设；列表类只设在 viewport 上，
+        免得滚动条和空白区也变成手型。
+        """
+        for cls in (QPushButton, QCheckBox, QComboBox):
+            for w in self.findChildren(cls):
+                w.setCursor(Qt.PointingHandCursor)
+        for view in (getattr(self, "tree_apps", None), getattr(self, "lst_ignore", None)):
+            if view is not None:
+                view.viewport().setCursor(Qt.PointingHandCursor)
+
     def _build_appearance(self) -> QGroupBox:
         box = QGroupBox("外观")
         lay = QVBoxLayout(box)
@@ -476,7 +492,7 @@ class SettingsWindow(QWidget):
         btn = QPushButton("刷新")
         btn.setObjectName("mini")
         btn.setToolTip(tooltip_html("重新读取本机通知设置里的应用名单"))
-        btn.clicked.connect(self._reload_apps)
+        btn.clicked.connect(self._on_refresh_apps)
         head.addWidget(btn)
         lay.addLayout(head)
 
@@ -496,6 +512,24 @@ class SettingsWindow(QWidget):
         lay.addWidget(self.lb_apps_hint)
 
         return box
+
+    def _flash_saved(self, text: str, ms: int = 1800):
+        """在底栏闪一句提示。同样的文案已经显示着就不重复计时。"""
+        if self.lb_saved.text() == text:
+            return
+        self.lb_saved.setText(text)
+        QTimer.singleShot(
+            ms, lambda: self.lb_saved.setText("") if self.lb_saved.text() == text else None
+        )
+
+    def _on_refresh_apps(self):
+        """「刷新」按钮：重读注册表，并告诉用户读到了几个。
+
+        只重建列表的话，点下去界面上什么反馈都没有，看着像没反应。
+        """
+        self._reload_apps()
+        n = self.tree_apps.topLevelItemCount()
+        self._flash_saved(f"已刷新：{n} 个应用" if n else "已刷新：没读到应用")
 
     def _phone_labels(self) -> list[tuple[str, str]]:
         """「手机连接」下面要列的手机 App：注册表那份 + 从通知里学到的。
@@ -698,7 +732,7 @@ class SettingsWindow(QWidget):
         row.setSpacing(8)
         self.btn_phonelink_detect = QPushButton("重新检测")
         self.btn_phonelink_detect.setObjectName("mini")
-        self.btn_phonelink_detect.clicked.connect(self._refresh_phonelink)
+        self.btn_phonelink_detect.clicked.connect(lambda: self._refresh_phonelink(reload_apps=True))
         row.addWidget(self.btn_phonelink_detect)
 
         self.btn_phonelink_guide = QPushButton("查看连接配置教程")
@@ -711,7 +745,11 @@ class SettingsWindow(QWidget):
         self._refresh_phonelink()
         return box
 
-    def _refresh_phonelink(self):
+    def _refresh_phonelink(self, reload_apps: bool = False):
+        if reload_apps:
+            # 「重新检测」时把应用列表也重读一遍：刚配好手机的话，
+            # 新的手机 App 要立刻出现在子项里，不然用户以为没生效
+            self._reload_apps()
         status = apps.phone_link_status()
         if status == "none":
             self.lb_phonelink.setText(
@@ -739,6 +777,13 @@ class SettingsWindow(QWidget):
             )
             self.btn_phonelink_guide.setText("查看配置教程")
 
+        if reload_apps:
+            # 按钮点的才给反馈；构建界面和读配置时静默
+            self._flash_saved({
+                "none": "没检测到「手机连接」",
+                "installed": "检测到了，但还没在转发通知",
+            }.get(status, "「手机连接」工作正常"))
+
     def _open_phonelink_guide(self):
         """生成本地 HTML 教程并用默认浏览器打开。"""
         status = apps.phone_link_status()
@@ -749,8 +794,7 @@ class SettingsWindow(QWidget):
             )
             return
         path = guide.guide_path()
-        self.lb_saved.setText("教程已生成")
-        QTimer.singleShot(1800, lambda: self.lb_saved.setText(""))
+        self._flash_saved("教程已生成")
         log = get("settings")
         log.info("已生成手机连接教程: %s", path)
 
@@ -1062,7 +1106,9 @@ class SettingsWindow(QWidget):
         self._autosave_timer.start(500)
 
     def _reset(self):
-        self._cfg = dict(cfgmod.DEFAULT_CONFIG)
+        # 必须深拷贝：DEFAULT_CONFIG 里的列表/字典是模块级对象，
+        # 浅拷贝后一旦被就地改动，后面所有「恢复默认」都会拿到被污染的值
+        self._cfg = copy.deepcopy(dict(cfgmod.DEFAULT_CONFIG))
         self._load_from_cfg()
         self._refresh_preview()
         self._autosave()
