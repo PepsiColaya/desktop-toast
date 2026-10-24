@@ -6,10 +6,9 @@ import os
 import time
 from typing import Callable, Optional
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QBrush, QColor, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPainterPath,
-    QPixmap,
+    QColor, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPixmap,
 )
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListView,
