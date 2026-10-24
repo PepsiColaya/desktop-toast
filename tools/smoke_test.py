@@ -118,8 +118,14 @@ def test_multi_app() -> None:
     check("微信仍走三段式", (m.source, m.sender, m.content),
           ("产品研发群", "张伟", "在吗"))
 
-    # 关键：正文/标题里出现 wechat 不能把别的应用误判成微信
-    w = WeChatWatcher(on_message=lambda x: None, enabled_apps=cfgmod.default_apps())
+    # 关键：正文/标题里出现 wechat 不能把别的应用误判成微信。
+    # 默认名单已经不含微信（PC 微信不发通知，系统通知设置里也没它），
+    # 这里手动构造一条「微信」条目，单独验证匹配逻辑本身还对不对
+    wx = cfgmod.normalize({"enabled_apps": [
+        {"key": "wechat", "name": "微信", "aumid": "Tencent.WeChat",
+         "match": ["微信", "wechat", "weixin"]},
+    ]})["enabled_apps"]
+    w = WeChatWatcher(on_message=lambda x: None, enabled_apps=wx)
     check("标题含 wechat 的非微信应用被挡",
           w.app_enabled("WorkBuddy.WorkBuddyAI", "WorkBuddy AI",
                         ["克隆并运行 wechat-notifier 项目"]), False)
@@ -135,14 +141,22 @@ def test_multi_app() -> None:
     check("勾选后放行", w.app_enabled("WorkBuddy.WorkBuddyAI", "WorkBuddy AI", ["任务已完成"]), True)
     check("未勾选的应用仍被挡", w.app_enabled("Tencent.WeChat", "微信", ["微信"]), False)
 
-    # 手机连接转发：AUMID 和显示名都是「手机连接」，真实来源只在首行，
-    # 只勾微信时必须靠首行才能认出来，否则一条微信都收不到
-    w.set_enabled_apps(cfgmod.default_apps())
+    # 手机连接转发：AUMID 和显示名都是「手机连接」，真实来源只在首行
     phone = "Microsoft.YourPhone_8wekyb3d8bbwe!App"
-    check("手机连接转发的微信放行",
+    # 只勾微信时必须靠首行才能认出来，否则一条微信都收不到
+    w.set_enabled_apps(wx)
+    check("只勾微信时手机连接转发的微信放行",
           w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), True)
-    check("手机连接转发的其它 App 仍被挡",
+    check("只勾微信时其它手机 App 被挡",
           w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), False)
+    # 默认名单是手机连接：转发的手机 App 全部放行，非手机来源仍挡掉
+    w.set_enabled_apps(cfgmod.default_apps())
+    check("默认名单放行手机连接转发",
+          w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), True)
+    check("默认名单也放行其它手机 App",
+          w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), True)
+    check("默认名单挡掉非手机来源",
+          w.app_enabled("WorkBuddy.WorkBuddyAI", "WorkBuddy AI", ["任务已完成"]), False)
     m = parse_notification(["微信", "妈妈", "对"], 22, "手机连接")
     check("手机连接微信解析出会话", m.source, "妈妈")
     check("手机连接微信解析出正文", m.content, "对")
@@ -164,9 +178,11 @@ def test_config() -> None:
     check("合并开关转布尔", c["merge_same_source"], False)
     check("新字段齐全", set(cfgmod.DEFAULT_CONFIG) <= set(c), True)
 
-    # 应用名单：默认只有微信；脏数据要被清掉
-    check("默认只监听微信", [a["name"] for a in cfgmod.default_apps()], ["微信"])
-    check("默认名单落在配置里", [a["name"] for a in cfgmod.normalize({})["enabled_apps"]], ["微信"])
+    # 应用名单：默认只有「手机连接」；脏数据要被清掉
+    # 列表数据源只认系统通知设置（注册表），PC 微信不在里面，所以默认不再预置微信
+    check("默认只监听手机连接", [a["name"] for a in cfgmod.default_apps()], ["手机连接"])
+    check("默认名单落在配置里",
+          [a["name"] for a in cfgmod.normalize({})["enabled_apps"]], ["手机连接"])
 
     c2 = cfgmod.normalize({"enabled_apps": [
         {"name": "微信", "match": ["微信", "微信", ""]},
@@ -175,7 +191,20 @@ def test_config() -> None:
         {"name": "Chrome", "match": "chrome"},
     ]})
     check("应用名单清洗", [(a["name"], a["match"]) for a in c2["enabled_apps"]],
-          [("微信", ["微信"]), ("Chrome", ["chrome"])])
+          [("Chrome", ["chrome"])])
+
+    # 老配置里预置的微信条目要清掉，且不能因此变成空名单（否则一条通知都收不到）
+    legacy = cfgmod.normalize({"enabled_apps": [
+        {"key": "wechat", "name": "微信", "match": ["微信", "wechat", "weixin"]},
+    ]})
+    check("微信幽灵项被清掉并回落默认",
+          [a["name"] for a in legacy["enabled_apps"]], ["手机连接"])
+    # 带 aumid 的微信条目是真应用，保留
+    real = cfgmod.normalize({"enabled_apps": [
+        {"key": "wechat", "name": "微信", "aumid": "Tencent.WeChat", "match": ["微信"]},
+    ]})
+    check("带 aumid 的微信条目保留",
+          [a["name"] for a in real["enabled_apps"]], ["微信"])
 
     check("空名单保留为空", cfgmod.normalize({"enabled_apps": []})["enabled_apps"], [])
 
@@ -329,6 +358,12 @@ def test_apps() -> None:
     check("匹配串中文去空格", apps.match_patterns("截图和草图", "Microsoft.ScreenSketch_8wekyb3d8bbwe!App"),
           ["microsoft.screensketch", "microsoft.screensketch_8wekyb3d8bbwe!app", "截图和草图"])
     check("匹配串不含通用词", "microsoft" in apps.match_patterns("Microsoft Store", "Microsoft.WindowsStore_8wekyb3d8bbwe!App"), False)
+
+    # 枚举结果必须只来自系统通知设置：不含 PC 微信，也不含垃圾项
+    listed = apps.list_notification_apps()
+    check("列表不含 PC 微信", any(apps.is_pc_wechat(a) for a in listed), False)
+    check("列表不含垃圾项", any(apps.is_junk_aumid(a) for a in listed), False)
+    check("列表无重复", len(listed), len(set(listed)))
 
 
 def test_guide() -> None:

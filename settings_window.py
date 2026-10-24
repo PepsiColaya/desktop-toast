@@ -516,17 +516,13 @@ class SettingsWindow(QWidget):
             record["name"] = name
             rows.append((record, name, aumid, hit is not None))
 
-        # 名单里有、但注册表里还没出现的（比如微信走手机连接转发）也要显示，否则会被误清掉
-        phone_labels = [l for l, _ in apps.phone_link_apps()]
-        for i, item in enumerate(enabled):
-            if i not in used:
-                # 这一项匹配到了手机连接转发的某个 App，说明它是经手机连接进来的
-                via_phone = any(
-                    p and p in " ".join(phone_labels).lower()
-                    for p in item.get("match", [])
-                )
-                sub = "经「手机连接」转发" if via_phone else "未出现在通知设置里"
-                rows.append((item, item["name"], sub, True))
+        # 名单里有、但注册表里没出现的条目，只有「注册表压根读不到」时才补显示，
+        # 否则会出现「微信」这种系统通知设置里根本没有的幽灵项。
+        # 判据：registry_apps 为空 = 读取失败或系统真没通知过，此时不能清空用户名单。
+        if not registry_apps:
+            for i, item in enumerate(enabled):
+                if i not in used:
+                    rows.append((item, item["name"], "通知设置未读到", True))
 
         was_loading = self._loading
         self._loading = True
@@ -556,18 +552,12 @@ class SettingsWindow(QWidget):
             for i in range(self.lst_apps.count())
             if self.lst_apps.item(i).checkState() == Qt.Checked
         ]
-        phone_labels = " ".join(l for l, _ in apps.phone_link_apps()).lower()
 
-        def covers_wechat(entry: dict) -> bool:
-            # 直接勾了手机连接，或者勾的项能匹配到「微信」这个手机 App
-            if apps.is_phone_link_aumid(entry.get("aumid", "")):
-                return True
-            return any(
-                p and (p == "微信" or (phone_labels and p in phone_labels))
-                for p in entry.get("match", [])
-            )
+        def is_phone_entry(entry: dict) -> bool:
+            # 列表里只会有系统通知设置里真实存在的应用，认「手机连接」看 aumid 就够
+            return apps.is_phone_link_aumid(entry.get("aumid", ""))
 
-        wechat_on = any(covers_wechat(e) for e in checked)
+        wechat_on = any(is_phone_entry(e) for e in checked)
 
         if pl == "active" and wechat_on:
             self.lb_apps_hint.setText(
@@ -577,7 +567,7 @@ class SettingsWindow(QWidget):
         elif pl == "active":
             self.lb_apps_hint.setText(
                 "检测到「手机连接」正在转发手机通知。"
-                "想收到微信消息，请勾选「手机连接」或勾选「微信」这一项。"
+                "想收到微信消息，请在上面的列表里勾选「手机连接」。"
             )
         elif pl == "installed":
             self.lb_apps_hint.setText(

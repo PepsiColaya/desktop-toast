@@ -182,7 +182,7 @@ def build_html(status: str = "installed") -> str:
 
 <div class="card">
     <h2><span class="num">5</span>在本程序里勾选「手机连接」</h2>
-    <p class="sub">只勾了微信是不够的，因为微信的通知是借手机连接的口进来的</p>
+    <p class="sub">微信的通知是借手机连接的口进来的，所以要勾的是它</p>
     <ol class="steps">
         <li>右键托盘图标 → <b>设置</b>，打开「监听应用」一栏。</li>
         <li>在列表里勾选 <b>手机连接</b>。</li>

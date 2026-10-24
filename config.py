@@ -12,18 +12,29 @@ APP_NAME = "DesktopToast"
 # 改名前的目录名。老用户升级时把整个目录搬过来，配置和日志都不用重设
 LEGACY_APP_NAME = "WeChatToast"
 
+# 老配置里预置过、但实际收不到通知的条目（PC 微信不往消息中心发消息）。
+# 规范化时按 key 丢弃，避免设置界面出现勾了也没用的幽灵项。
+GHOST_APP_KEYS = {"wechat", "微信"}
+
 
 def default_apps() -> list[dict]:
-    """默认只监听微信。
+    """默认监听「手机连接」。
 
-    match 是一组小写子串，用来和通知里的 AUMID / 显示名做包含匹配。
-    微信各版本的应用标识不统一（微信 / WeChat / Weixin / Tencent.WeChat），
-    所以多放几个别名，避免换个版本就收不到。
+    可监听的应用**只取 Windows「设置 → 系统 → 通知」里出现过的应用**
+    （注册表 Notifications\\Settings 下的 AUMID），这里不再预置「微信」：
+    PC 微信从来不往消息中心发通知，它在系统通知列表里根本不存在，
+    留在名单里只会让人以为勾了就能收微信，实际一条也收不到。
 
-    PC 微信自己不往消息中心发通知，微信消息实际是「手机连接」转发过来的，
-    转发的通知首行就是「微信」，靠这个别名一样能匹配上（见 watcher.app_enabled）。
+    微信消息是「手机连接」把手机通知转发过来的，所以默认勾选手机连接。
+    转发来的通知首行是手机 App 名（微信 / 快捷指令 / TestFlight…），
+    watcher.app_enabled 会把首行一起纳入匹配（见 PHONE_LINK_HINTS）。
     """
-    return [{"key": "wechat", "name": "微信", "match": ["微信", "wechat", "weixin"]}]
+    return [{
+        "key": "microsoft.yourphone_8wekyb3d8bbwe!app",
+        "name": "手机连接",
+        "aumid": "Microsoft.YourPhone_8wekyb3d8bbwe!App",
+        "match": ["microsoft.yourphone", "手机连接", "phone link"],
+    }]
 
 
 DEFAULT_CONFIG: dict = {
@@ -191,10 +202,20 @@ def _normalize_apps(raw) -> list[dict]:
             continue
 
         key = str(item.get("key") or pats[0]).strip() or pats[0]
+
+        # 老版本预置过「微信」条目。PC 微信不发通知、系统通知列表里也没有它，
+        # 留着就是勾了也收不到的幽灵项，直接丢弃（带 aumid 的保留，那是真应用）
+        if not aumid and key.lower() in GHOST_APP_KEYS:
+            continue
+
         entry = {"key": key, "name": name, "match": pats}
         if aumid:
             entry["aumid"] = aumid
         out.append(entry)
+
+    # 老配置里只剩废弃条目时回落到默认，免得升级后一条通知都收不到
+    if raw and not out:
+        return default_apps()
 
     return out
 
