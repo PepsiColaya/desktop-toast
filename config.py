@@ -65,6 +65,12 @@ DEFAULT_CONFIG: dict = {
     "avatar_dir": "",                # 头像目录，留空则用程序目录下的 avatars
     # ---- 监听范围 ----
     "enabled_apps": default_apps(),  # 只提醒这些应用的通知
+    # 「手机连接」下面能勾的手机 App 子项。手机连接把所有手机通知都收进来，
+    # 只靠它分不出微信和别的 App，所以再按通知首行的 App 名过一层：
+    #   None  = 不筛选，手机转发来的全收（老配置没这个字段时的行为）
+    #   []    = 一个都不收
+    #   [...] = 只收这些手机 App（微信 / QQ / 电话…）
+    "phone_apps": None,
     # AUMID -> 中文名 的学习缓存，运行时从通知里自动补全
     "app_names": {},
     # ---- 启动 ----
@@ -233,6 +239,22 @@ def _normalize_app_names(raw) -> dict[str, str]:
     return out
 
 
+def _normalize_phone_apps(raw):
+    """清洗「手机连接」子项名单。
+
+    ``None`` 和非法值都回落成 ``None``（= 不过滤，全收），
+    这样老配置升级后行为不变；``[]`` 是用户明确全不勾，要保留。
+    """
+    if raw is None or not isinstance(raw, list):
+        return None
+    out: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def normalize(cfg: dict) -> dict:
     """补齐缺失项并把数值夹到合法区间。"""
     out = dict(DEFAULT_CONFIG)
@@ -273,6 +295,7 @@ def normalize(cfg: dict) -> dict:
     # 监听范围：至少保留用户明确选择的集合，空列表表示「什么都不弹」
     out["enabled_apps"] = _normalize_apps(out.get("enabled_apps"))
     out["app_names"] = _normalize_app_names(out.get("app_names"))
+    out["phone_apps"] = _normalize_phone_apps(out.get("phone_apps"))
 
     # 头像目录留空时落到配置目录下的 avatars
     av = out.get("avatar_dir") or ""

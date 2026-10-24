@@ -161,6 +161,25 @@ def test_multi_app() -> None:
     check("手机连接微信解析出会话", m.source, "妈妈")
     check("手机连接微信解析出正文", m.content, "对")
 
+    # 手机连接下面的子项：勾哪个手机 App 就收哪个
+    known = ["微信", "QQ", "快捷指令"]
+    w.set_enabled_apps(cfgmod.default_apps())
+    w.set_phone_apps(None, known)
+    check("不过滤时手机通知全收",
+          w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), True)
+    w.set_phone_apps(["微信"], known)
+    check("只勾微信时微信放行",
+          w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), True)
+    check("只勾微信时 QQ 被挡",
+          w.app_enabled(phone, "手机连接", ["QQ", "张三", "在吗"]), False)
+    check("只勾微信时快捷指令被挡",
+          w.app_enabled(phone, "手机连接", ["快捷指令", "17:47", "正在运行"]), False)
+    check("认不出的手机 App 放行（宁可多弹不漏）",
+          w.app_enabled(phone, "手机连接", ["某新App", "x", "y"]), True)
+    w.set_phone_apps([], known)
+    check("全不勾时手机通知全挡",
+          w.app_enabled(phone, "手机连接", ["微信", "妈妈", "对"]), False)
+
 
 def test_config() -> None:
     print("[配置] 规范化与兜底")
@@ -207,6 +226,14 @@ def test_config() -> None:
           [a["name"] for a in real["enabled_apps"]], ["微信"])
 
     check("空名单保留为空", cfgmod.normalize({"enabled_apps": []})["enabled_apps"], [])
+
+    # 手机连接的子项名单：None=全收，[]=全不收，其余是勾选的手机 App 名
+    check("手机App默认不过滤", cfgmod.DEFAULT_CONFIG["phone_apps"], None)
+    check("手机App名单清洗",
+          cfgmod.normalize({"phone_apps": [" 微信 ", "QQ", "微信", ""]})["phone_apps"],
+          ["微信", "QQ"])
+    check("手机App全不勾保留", cfgmod.normalize({"phone_apps": []})["phone_apps"], [])
+    check("手机App脏值回落不过滤", cfgmod.normalize({"phone_apps": "微信"})["phone_apps"], None)
 
     # 设置面板左栏宽度（中间分割线位置）
     check("左栏宽度默认", cfgmod.DEFAULT_CONFIG["left_width"], 540)

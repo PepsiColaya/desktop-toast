@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+import apps
 import autostart
 import config as cfgmod
 import logger
@@ -176,6 +177,11 @@ def main() -> int:
             watcher.set_poll_interval(cfg.get("poll_interval_ms", 1000) / 1000.0)
             watcher.set_ignore_sources(cfg.get("ignore_sources", []))
             watcher.set_enabled_apps(cfg.get("enabled_apps", []))
+            # 手机连接的子项：勾了哪些手机 App 才提醒
+            watcher.set_phone_apps(
+                cfg.get("phone_apps"),
+                [label for label, _ in apps.phone_link_apps()],
+            )
 
     settings.applied.connect(apply_cfg)
 
@@ -246,6 +252,8 @@ def main() -> int:
         ignore_sources=cfg.get("ignore_sources", []),
         enabled_apps=cfg.get("enabled_apps", []),
         on_app_learned=bridge.app_learned.emit,
+        phone_apps=cfg.get("phone_apps"),
+        phone_known=[label for label, _ in apps.phone_link_apps()],
     )
     watcher.start()
 

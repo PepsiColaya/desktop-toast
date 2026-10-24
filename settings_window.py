@@ -8,12 +8,13 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QColor, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPixmap,
+    QBrush, QColor, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPainterPath,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListView,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider,
-    QSplitter, QVBoxLayout, QWidget,
+    QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import apps
@@ -118,6 +119,17 @@ QListWidget::item {
 }
 QListWidget::item:hover { background: #F2FBF6; }
 QListWidget::item:selected { background: #E8F8EF; color: #07A050; }
+/* 监听应用是树：手机连接下面挂着它转发的手机 App */
+QTreeWidget {
+    border: 1px solid #E4E4EC; border-radius: 8px;
+    background: #FCFCFD; padding: 3px; outline: 0;
+}
+QTreeWidget::item { min-height: 24px; border-radius: 5px; color: #22222A; }
+/* 父项没勾时子项会被 disable，这里给个浅灰，别让它们看着还能点 */
+QTreeWidget::item:disabled { color: #B4B4BE; }
+QTreeWidget::item:hover { background: #F2FBF6; }
+QTreeWidget::item:selected { background: #E8F8EF; color: #07A050; }
+QTreeWidget::branch { background: transparent; }
 QPushButton#mini { padding: 5px 12px; font-size: 12px; }
 /* 中间分割线：平时是浅灰细线，悬停变绿提示可以抓；
    宽度 3px 是抓取热区，太细会很难对准 */
@@ -469,10 +481,15 @@ class SettingsWindow(QWidget):
         head.addWidget(btn)
         lay.addLayout(head)
 
-        self.lst_apps = QListWidget()
-        self.lst_apps.setFixedHeight(118)
-        self.lst_apps.itemChanged.connect(self._on_widget_change)
-        lay.addWidget(self.lst_apps)
+        self.tree_apps = QTreeWidget()
+        self.tree_apps.setHeaderHidden(True)
+        self.tree_apps.setColumnCount(1)
+        self.tree_apps.setRootIsDecorated(True)
+        self.tree_apps.setIndentation(16)
+        self.tree_apps.setExpandsOnDoubleClick(False)
+        self.tree_apps.setFixedHeight(200)
+        self.tree_apps.itemChanged.connect(self._on_app_item_changed)
+        lay.addWidget(self.tree_apps)
 
         self.lb_apps_hint = QLabel()
         self.lb_apps_hint.setObjectName("hint")
@@ -487,6 +504,10 @@ class SettingsWindow(QWidget):
         数据源是注册表 Notifications\\Settings 下的 AUMID，
         也就是 Windows「设置 → 系统 → 通知」里出现过的应用。
         PC 微信不发通知，本来就不会出现在里面，正好排除掉。
+
+        「手机连接」会折叠成一条，下面挂上它正在转发的手机 App。
+        手机连接把所有手机通知都收进同一个 AUMID，只能靠通知首行的 App 名
+        再筛一层，所以子项按名字存进 phone_apps（见 watcher._phone_app_allowed）。
         """
         enabled = list(self._cfg.get("enabled_apps", []))
         learned = self._cfg.get("app_names", {}) or {}
@@ -526,20 +547,64 @@ class SettingsWindow(QWidget):
 
         was_loading = self._loading
         self._loading = True
-        self.lst_apps.clear()
+        self.tree_apps.clear()
+        phone_labels = apps.phone_link_apps()
+        phone_picked = self._cfg.get("phone_apps")   # None = 不过滤，全收
+
         for record, name, sub, checked in rows:
-            it = QListWidgetItem(name)
-            it.setData(Qt.UserRole, record)
-            it.setToolTip(tooltip_html(
-                name,
-                f"标识：{sub}",
-            ))
+            it = QTreeWidgetItem([name])
+            it.setData(0, Qt.UserRole, record)
+            it.setToolTip(0, tooltip_html(name, f"标识：{sub}"))
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-            self.lst_apps.addItem(it)
+            it.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+            self.tree_apps.addTopLevelItem(it)
+
+            # 「手机连接」下面挂上它正在转发的手机 App，勾哪个收哪个
+            if apps.is_phone_link_aumid(str(record.get("aumid") or sub)):
+                for label, paumid in phone_labels:
+                    ch = QTreeWidgetItem([label])
+                    ch.setData(0, Qt.UserRole, {"key": f"phone:{label}", "name": label})
+                    ch.setToolTip(0, tooltip_html(
+                        label,
+                        "来自「手机连接」转发",
+                        f"标识：{paumid}",
+                    ))
+                    ch.setFlags(ch.flags() | Qt.ItemIsUserCheckable)
+                    on = phone_picked is None or label in phone_picked
+                    ch.setCheckState(0, Qt.Checked if on else Qt.Unchecked)
+                    it.addChild(ch)
+                it.setExpanded(True)
         self._loading = was_loading
 
+        self._sync_phone_children()
         self._update_apps_hint()
+
+    def _on_app_item_changed(self, item, _column: int = 0):
+        """勾选变化：父项（手机连接）带着子项一起启用/置灰。"""
+        if self._loading:
+            return
+        if item.parent() is None and item.childCount():
+            self._sync_phone_children()
+        self._on_widget_change()
+
+    def _sync_phone_children(self):
+        """父项没勾时，子项置灰——保留勾选状态，重新勾上还能接着用。
+
+        置灰靠 QSS 的 ``QTreeWidget::item:disabled``：item 的 color 在
+        QSS 里被写死了，调色板改不动，只能靠 disable 触发的伪状态。
+        """
+        was = self._loading
+        self._loading = True
+        for i in range(self.tree_apps.topLevelItemCount()):
+            top = self.tree_apps.topLevelItem(i)
+            if not top.childCount():
+                continue
+            on = top.checkState(0) == Qt.Checked
+            for j in range(top.childCount()):
+                ch = top.child(j)
+                flags = ch.flags()
+                ch.setFlags(flags | Qt.ItemIsEnabled if on else flags & ~Qt.ItemIsEnabled)
+        self._loading = was
 
     def _update_apps_hint(self):
         """列表下面挂一句针对性说明，告诉用户接下来该干什么。
@@ -548,9 +613,9 @@ class SettingsWindow(QWidget):
         """
         pl = apps.phone_link_status()
         checked = [
-            self.lst_apps.item(i).data(Qt.UserRole) or {}
-            for i in range(self.lst_apps.count())
-            if self.lst_apps.item(i).checkState() == Qt.Checked
+            self.tree_apps.topLevelItem(i).data(0, Qt.UserRole) or {}
+            for i in range(self.tree_apps.topLevelItemCount())
+            if self.tree_apps.topLevelItem(i).checkState(0) == Qt.Checked
         ]
 
         def is_phone_entry(entry: dict) -> bool:
@@ -562,7 +627,7 @@ class SettingsWindow(QWidget):
         if pl == "active" and wechat_on:
             self.lb_apps_hint.setText(
                 "已就绪：微信等手机 App 的消息会经「手机连接」转发进来。"
-                "还没见到中文名的应用，等它发过一条通知就会自动补上。"
+                "展开「手机连接」还能只勾想收的手机 App。"
             )
         elif pl == "active":
             self.lb_apps_hint.setText(
@@ -903,11 +968,33 @@ class SettingsWindow(QWidget):
         c["ignore_sources"] = [
             self.lst_ignore.item(i).text() for i in range(self.lst_ignore.count())
         ]
-        c["enabled_apps"] = [
-            self.lst_apps.item(i).data(Qt.UserRole)
-            for i in range(self.lst_apps.count())
-            if self.lst_apps.item(i).checkState() == Qt.Checked
-        ]
+        enabled: list[dict] = []
+        phone_picked = None          # 手机连接一个都没勾上时的兜底（保持原值）
+        phone_seen = False
+        for i in range(self.tree_apps.topLevelItemCount()):
+            top = self.tree_apps.topLevelItem(i)
+            if top.checkState(0) != Qt.Checked:
+                continue
+            record = top.data(0, Qt.UserRole)
+            if record:
+                enabled.append(record)
+            if not apps.is_phone_link_aumid(str((record or {}).get("aumid", ""))):
+                continue
+            phone_seen = True
+            total = top.childCount()
+            picked = [
+                top.child(j).text(0) for j in range(total)
+                if top.child(j).checkState(0) == Qt.Checked
+            ]
+            if total == 0:
+                # 读不到手机 App 列表（注册表异常），别拿空名单把通知全挡掉
+                picked = self._cfg.get("phone_apps")
+            elif len(picked) == total:
+                picked = None        # 全勾 = 不过滤，以后新装的手机 App 也自动收
+            phone_picked = picked
+        c["enabled_apps"] = enabled
+        if phone_seen:
+            c["phone_apps"] = phone_picked
         # 中间分割线位置，存的是左栏宽度
         if hasattr(self, "splitter"):
             c["left_width"] = self.splitter.sizes()[0]
