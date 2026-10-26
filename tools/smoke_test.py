@@ -279,6 +279,21 @@ def test_config() -> None:
     check("合并开关转布尔", c["merge_same_source"], False)
     check("新字段齐全", set(cfgmod.DEFAULT_CONFIG) <= set(c), True)
 
+    # 自定义配色：三位简写要展开成六位，写坏的色值回落默认，
+    # 否则 QColor 拿到非法串会静默画成纯黑
+    c3 = cfgmod.normalize({
+        "theme": "custom",
+        "custom_bg": "#abc",
+        "custom_title": "red",
+        "custom_body": "#12345",
+        "custom_border": "  #00ff00  ",
+    })
+    check("自定义主题保留", c3["theme"], "custom")
+    check("三位色值展开", c3["custom_bg"], "#AABBCC")
+    check("颜色名不认，回落默认", c3["custom_title"], "#FFFFFF")
+    check("五位色值不认，回落默认", c3["custom_body"], "#B4B4BE")
+    check("前后空格忽略并大写", c3["custom_border"], "#00FF00")
+
     # 应用名单：默认只有「手机连接」；脏数据要被清掉
     # 列表数据源只认系统通知设置（注册表），PC 微信不在里面，所以默认不再预置微信
     check("默认只监听手机连接", [a["name"] for a in cfgmod.default_apps()], ["手机连接"])
@@ -786,7 +801,9 @@ def test_buttons() -> None:
                     return [it.child(j).text(0) for j in range(it.childCount())]
             return []
 
-        texts = sorted(b.text() for b in w.findChildren(QPushButton))
+        # 色块按钮没有文字，统计清单时排除，单独在配色那组里验
+        texts = sorted(b.text() for b in w.findChildren(QPushButton) if b.text())
+        check("四个色块入口", len(w.findChildren(QPushButton, "swatch")), 4)
         # 手机 App 手动添加/移除和免打扰那组按钮文字重名，靠 objectName 区分
         check("手动添加入口存在", w.findChild(QPushButton, "phone-add") is not None, True)
         check("手动移除入口存在", w.findChild(QPushButton, "phone-del") is not None, True)
@@ -868,6 +885,97 @@ def test_buttons() -> None:
             w.deleteLater()
 
 
+def test_custom_theme() -> None:
+    print("[配色] 主题自定义：色块、色值输入与卡片取色")
+    real = (apps.list_notification_apps, apps.resolve_name, apps.phone_link_apps,
+            apps.phone_link_status, autostart.is_enabled, cfgmod.save,
+            guide.open_guide, os.startfile, os.makedirs)
+    phone_aumid = "Microsoft.YourPhone_8wekyb3d8bbwe!App"
+
+    apps.list_notification_apps = lambda: [phone_aumid]
+    apps.resolve_name = lambda aumid, learned=None: "手机连接"
+    apps.phone_link_apps = lambda: []
+    apps.phone_link_status = lambda: "active"
+    autostart.is_enabled = lambda: False
+    cfgmod.save = lambda c: True
+    guide.open_guide = lambda status=None: True
+    os.startfile = lambda p: None
+    os.makedirs = lambda p, exist_ok=False: None
+
+    w = None
+    w2 = None
+    try:
+        w = SettingsWindow(cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG)))
+        w.show()
+
+        check("主题有三个选项",
+              [w.cb_theme.itemData(i) for i in range(w.cb_theme.count())],
+              ["dark", "light", "custom"])
+        check("深色时不展开配色区", w.color_box.isVisible(), False)
+
+        # 切到自定义：配色区展开，色值从刚才看到的深色起手
+        w.cb_theme.setCurrentIndex(w.cb_theme.findData("custom"))
+        check("自定义时展开配色区", w.color_box.isVisible(), True)
+        check("从深色起手-背景", w.cr_bg.value(), "#1F1F23")
+
+        # 直接敲色值：配置要跟着变
+        w.cr_bg.ed_hex.setText("#FDF6E3")
+        w.cr_bg.ed_hex.editingFinished.emit()
+        check("色值输入生效", w.cr_bg.value(), "#FDF6E3")
+        check("配置同步背景色", w._cfg["custom_bg"], "#FDF6E3")
+
+        # 敲错了要还原，不能把坏色值存进配置
+        w.cr_title.ed_hex.setText("不是颜色")
+        w.cr_title.ed_hex.editingFinished.emit()
+        check("非法色值还原", w.cr_title.value(), "#FFFFFF")
+        check("非法色值不进配置", w._cfg["custom_title"], "#FFFFFF")
+
+        w.cr_body.ed_hex.setText("#abc")
+        w.cr_body.ed_hex.editingFinished.emit()
+        check("三位色值展开", w.cr_body.value(), "#AABBCC")
+
+        # 卡片要真的用上自定义颜色
+        t = Toast(WeChatMessage("示例群", "", "测试", time.time(), 1), w._cfg)
+        check("卡片背景用自定义色", t.theme["bg"].name().upper(), "#FDF6E3")
+        check("卡片标题用自定义色", t.theme["title"], "#FFFFFF")
+        check("卡片正文用自定义色", t.theme["body"], "#AABBCC")
+        t.close()
+        t.deleteLater()
+
+        # 白字配浅底：得提醒一句，不然调完只会以为程序坏了
+        check("白字浅底会提示", w.lb_contrast.isVisible(), True)
+        for row, val in ((w.cr_title, "#5B4A00"), (w.cr_body, "#6B5A20")):
+            row.ed_hex.setText(val)
+            row.ed_hex.editingFinished.emit()
+        check("改成深色后提示消失", w.lb_contrast.isVisible(), False)
+
+        # 已经调过色：切走再切回来不能被冲掉
+        w.cb_theme.setCurrentIndex(w.cb_theme.findData("light"))
+        check("浅色时收起配色区", w.color_box.isVisible(), False)
+        w.cb_theme.setCurrentIndex(w.cb_theme.findData("custom"))
+        check("切回来保留自己调的颜色", w.cr_bg.value(), "#FDF6E3")
+
+        # 全新配置从浅色切过去：应该以浅色起手，不能突然变深
+        w2 = SettingsWindow(cfgmod.normalize(dict(cfgmod.DEFAULT_CONFIG)))
+        w2.show()
+        w2.cb_theme.setCurrentIndex(w2.cb_theme.findData("light"))
+        w2.cb_theme.setCurrentIndex(w2.cb_theme.findData("custom"))
+        check("从浅色起手-背景", w2.cr_bg.value(), "#FFFFFF")
+        check("从浅色起手-标题", w2.cr_title.value(), "#17171C")
+
+        # 色块也得是手型光标，不然看不出能点
+        check("色块是手型光标",
+              w.cr_bg.btn_swatch.cursor().shape(), Qt.PointingHandCursor)
+    finally:
+        (apps.list_notification_apps, apps.resolve_name, apps.phone_link_apps,
+         apps.phone_link_status, autostart.is_enabled, cfgmod.save,
+         guide.open_guide, os.startfile, os.makedirs) = real
+        for win in (w, w2):
+            if win is not None:
+                win.close()
+                win.deleteLater()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     test_parse()
@@ -877,6 +985,7 @@ def main() -> int:
     test_apps()
     test_apps_tree()
     test_buttons()
+    test_custom_theme()
     test_guide()
     test_tooltip()
     test_migrate()

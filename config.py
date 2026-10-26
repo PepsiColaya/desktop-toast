@@ -39,7 +39,12 @@ def default_apps() -> list[dict]:
 
 DEFAULT_CONFIG: dict = {
     # ---- 外观 ----
-    "theme": "dark",                 # dark / light
+    "theme": "dark",                 # dark / light / custom
+    # 自定义颜色：仅当 theme == "custom" 时生效
+    "custom_bg": "#1F1F23",          # 卡片背景色
+    "custom_title": "#FFFFFF",       # 标题文字色
+    "custom_body": "#B4B4BE",        # 正文文字色
+    "custom_border": "#34343C",      # 卡片边框色
     "font_family": "Microsoft YaHei UI",
     "card_width": 340,               # 卡片宽度 px
     "scale": 1.0,                    # 字号与内边距缩放
@@ -102,6 +107,32 @@ RANGES: dict = {
     "poll_interval_ms": (400, 5000),
     "left_width": (340, 900),
 }
+
+
+def _valid_hex_color(val: str) -> bool:
+    """校验 #RGB / #RRGGBB（允许省略 #），不合法返回 False。
+
+    只接受十六进制写法，颜色选择器、用户手改 config.json 都走同一套校验，
+    免得把 "red"、"#12" 这种写进去让 QColor 静默变黑。
+    """
+    s = val.strip().lstrip("#")
+    if len(s) not in (3, 6):
+        return False
+    return all(c in "0123456789abcdefABCDEF" for c in s)
+
+
+def normalize_hex_color(val, fallback: str) -> str:
+    """把用户输入的颜色规范成 #RRGGBB，非法则用 fallback。
+
+    #RGB 会展开成 #RRGGBB，方便落盘和回填到颜色选择器。
+    """
+    s = str(val or "").strip()
+    if not _valid_hex_color(s):
+        return fallback
+    s = s.lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    return "#" + s.upper()
 
 
 def app_dir() -> str:
@@ -304,8 +335,16 @@ def normalize(cfg: dict) -> dict:
             val = DEFAULT_CONFIG[key]
         out[key] = min(hi, max(lo, val))
 
-    if out["theme"] not in ("dark", "light"):
+    if out["theme"] not in ("dark", "light", "custom"):
         out["theme"] = "dark"
+    # 自定义颜色：统一规范成 #RRGGBB，非法值回落到深色默认
+    for key, fallback in (
+        ("custom_bg", "#1F1F23"),
+        ("custom_title", "#FFFFFF"),
+        ("custom_body", "#B4B4BE"),
+        ("custom_border", "#34343C"),
+    ):
+        out[key] = normalize_hex_color(out.get(key), fallback)
     if out["position"] not in ("top-right", "top-left", "bottom-right", "bottom-left"):
         out["position"] = "top-right"
     if out["screen"] not in ("cursor", "primary"):

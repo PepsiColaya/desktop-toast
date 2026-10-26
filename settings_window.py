@@ -12,9 +12,9 @@ from PySide6.QtGui import (
     QColor, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListView,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider,
-    QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QCheckBox, QColorDialog, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QListView, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
+    QSizePolicy, QSlider, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import apps
@@ -24,7 +24,7 @@ import guide
 import logo
 import wechat
 from logger import get
-from toast import Toast
+from toast import THEMES, Toast
 from watcher import WeChatMessage
 
 PREVIEW_MSGS = [
@@ -50,6 +50,7 @@ QGroupBox::title {
 }
 QLabel#hint { color: #8A8A96; font-size: 12px; }
 QLabel#value { color: #07A050; font-weight: 600; }
+QLabel#warn { color: #C8730A; font-size: 12px; }
 QSlider::groove:horizontal { height: 4px; background: #E8E8EE; border-radius: 2px; }
 QSlider::sub-page:horizontal { background: #07C160; border-radius: 2px; }
 QSlider::handle:horizontal {
@@ -110,6 +111,10 @@ QLineEdit {
     selection-background-color: #07C160; selection-color: #FFFFFF;
 }
 QLineEdit:focus { border-color: #07C160; }
+/* 色值输入框：等宽字体，一眼能看出 #1F1F23 有没有打错 */
+QLineEdit#hex {
+    padding: 3px 4px; font-family: "Consolas", "Microsoft YaHei UI"; font-size: 12px;
+}
 QListWidget {
     border: 1px solid #E4E4EC; border-radius: 8px;
     background: #FCFCFD; padding: 3px; outline: 0;
@@ -252,6 +257,101 @@ class SliderRow(QWidget):
         self.slider.blockSignals(False)
 
 
+def contrast_ratio(c1: str, c2: str) -> float:
+    """两个颜色的 WCAG 对比度，1.0（完全一样）到 21.0（黑白）。"""
+    def lum(hex_color: str) -> float:
+        c = QColor(hex_color)
+
+        def ch(v: int) -> float:
+            v = v / 255
+            return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+        return 0.2126 * ch(c.red()) + 0.7152 * ch(c.green()) + 0.0722 * ch(c.blue())
+
+    a, b = lum(c1), lum(c2)
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+class ColorRow(QWidget):
+    """一行颜色配置：标题 + 色值输入 + 色块。
+
+    色值可以直接粘贴（``#1F1F23`` / ``1F1F23`` / ``#fff`` 都认），
+    也可以点右侧色块调系统调色板。两种入口都走同一套校验，
+    输错就还原成上一个有效值，不会把坏色值存进配置。
+    """
+
+    changed = Signal(str)
+
+    def __init__(self, title: str, value: str):
+        super().__init__()
+        self._value = cfgmod.normalize_hex_color(value, "#000000")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 3, 0, 3)
+        lay.setSpacing(8)
+
+        self.lb_title = QLabel(title)
+        lay.addWidget(self.lb_title)
+        lay.addStretch(1)
+
+        self.ed_hex = QLineEdit()
+        self.ed_hex.setObjectName("hex")
+        self.ed_hex.setFixedWidth(94)
+        self.ed_hex.setMaxLength(7)
+        self.ed_hex.setAlignment(Qt.AlignCenter)
+        self.ed_hex.setToolTip(tooltip_html("直接输入色值", "支持 #1F1F23、1F1F23、#fff 三种写法"))
+        self.ed_hex.editingFinished.connect(self._on_hex_edited)
+
+        self.btn_swatch = QPushButton()
+        self.btn_swatch.setObjectName("swatch")
+        self.btn_swatch.setFixedSize(46, 24)
+        self.btn_swatch.setToolTip(tooltip_html("点这里打开调色板"))
+        self.btn_swatch.clicked.connect(self._pick)
+
+        lay.addWidget(self.ed_hex)
+        lay.addWidget(self.btn_swatch)
+
+        self._sync()
+
+    def _sync(self):
+        self.ed_hex.setText(self._value)
+        # 色块边界要跟着底色走：浅色块用灰边、深色块用深边，否则在白面板上看不出边界
+        border = "#C8C8D2" if QColor(self._value).lightness() > 160 else "#3A3A44"
+        self.btn_swatch.setStyleSheet(
+            f'QPushButton#swatch {{ background: {self._value};'
+            f' border: 1px solid {border}; border-radius: 6px; padding: 0; }}'
+            f'QPushButton#swatch:hover {{ border-color: #07C160; }}'
+        )
+
+    def _pick(self):
+        c = QColorDialog.getColor(QColor(self._value), self, "选择颜色")
+        if not c.isValid():
+            return
+        if c.name().upper() == self._value:
+            return
+        self.set_value(c.name())
+        self.changed.emit(self._value)
+
+    def _on_hex_edited(self):
+        val = cfgmod.normalize_hex_color(self.ed_hex.text(), "")
+        if not val:                        # 输错了就还原，别留半截色值
+            self.ed_hex.setText(self._value)
+            return
+        if val == self._value:
+            self.ed_hex.setText(val)       # 顺手把 "fff" 规范成 "#FFFFFF"
+            return
+        self.set_value(val)
+        self.changed.emit(self._value)
+
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, v: str):
+        self._value = cfgmod.normalize_hex_color(v, self._value)
+        self._sync()
+
+
 class PreviewPane(QWidget):
     """预览画布。"""
 
@@ -318,6 +418,9 @@ class SettingsWindow(QWidget):
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._refresh_preview)
+
+        # 切到「自定义」时用来起手的预置配色（dark / light）
+        self._last_preset = "dark"
 
         # 改动后自动落盘，不需要手动点保存
         self._autosave_timer = QTimer(self)
@@ -462,10 +565,33 @@ class SettingsWindow(QWidget):
         self.cb_theme = QComboBox()
         self.cb_theme.addItem("深色", "dark")
         self.cb_theme.addItem("浅色", "light")
+        self.cb_theme.addItem("自定义", "custom")
         style_combo(self.cb_theme)
-        self.cb_theme.currentIndexChanged.connect(self._on_widget_change)
+        self.cb_theme.currentIndexChanged.connect(self._on_theme_changed)
         row.addWidget(self.cb_theme)
         lay.addLayout(row)
+
+        # 自定义配色：只在选「自定义」时展开，选深/浅色时整块收起
+        self.color_box = QWidget()
+        cl = QVBoxLayout(self.color_box)
+        cl.setContentsMargins(2, 4, 0, 6)
+        cl.setSpacing(2)
+
+        self.cr_bg = ColorRow("背景色", cfgmod.DEFAULT_CONFIG["custom_bg"])
+        self.cr_title = ColorRow("标题文字", cfgmod.DEFAULT_CONFIG["custom_title"])
+        self.cr_body = ColorRow("正文文字", cfgmod.DEFAULT_CONFIG["custom_body"])
+        self.cr_border = ColorRow("边框", cfgmod.DEFAULT_CONFIG["custom_border"])
+        for r in (self.cr_bg, self.cr_title, self.cr_body, self.cr_border):
+            r.changed.connect(self._on_widget_change)
+            cl.addWidget(r)
+
+        # 白底白字这种搭配调完才发现「字没了」，这里提前提一句
+        self.lb_contrast = QLabel("")
+        self.lb_contrast.setObjectName("warn")
+        self.lb_contrast.setWordWrap(True)
+        cl.addWidget(self.lb_contrast)
+
+        lay.addWidget(self.color_box)
 
         self.sl_width = SliderRow("卡片宽度", 240, 560, 340, lambda v: f"{v} px")
         self.sl_scale = SliderRow("整体缩放", 80, 150, 100, lambda v: f"{v}%")
@@ -1034,6 +1160,14 @@ class SettingsWindow(QWidget):
 
         idx = self.cb_theme.findData(c["theme"])
         self.cb_theme.setCurrentIndex(max(0, idx))
+        if c["theme"] in ("dark", "light"):
+            self._last_preset = c["theme"]
+        self.cr_bg.set_value(c["custom_bg"])
+        self.cr_title.set_value(c["custom_title"])
+        self.cr_body.set_value(c["custom_body"])
+        self.cr_border.set_value(c["custom_border"])
+        self._sync_color_rows_visible()
+        self._update_contrast_hint()
         idx = self.cb_pos.findData(c["position"])
         self.cb_pos.setCurrentIndex(max(0, idx))
         idx = self.cb_screen.findData(c["screen"])
@@ -1081,6 +1215,10 @@ class SettingsWindow(QWidget):
     def _collect(self):
         c = self._cfg
         c["theme"] = self.cb_theme.currentData()
+        c["custom_bg"] = self.cr_bg.value()
+        c["custom_title"] = self.cr_title.value()
+        c["custom_body"] = self.cr_body.value()
+        c["custom_border"] = self.cr_border.value()
         c["position"] = self.cb_pos.currentData()
         c["screen"] = self.cb_screen.currentData()
         c["card_width"] = self.sl_width.value()
@@ -1137,11 +1275,72 @@ class SettingsWindow(QWidget):
             c["left_width"] = self.splitter.sizes()[0]
         self._cfg = cfgmod.normalize(c)
 
+    def _on_theme_changed(self, *_):
+        """主题下拉框变了：展开/收起配色区，必要时用当前预置配色起手。"""
+        if self._loading:
+            return
+        name = self.cb_theme.currentData()
+        if name in ("dark", "light"):
+            self._last_preset = name
+        elif name == "custom":
+            self._seed_custom_from_preset()
+        self._sync_color_rows_visible()
+        self._on_widget_change()
+
+    def _sync_color_rows_visible(self):
+        """只有选「自定义」时才显示那四行颜色。"""
+        self.color_box.setVisible(self.cb_theme.currentData() == "custom")
+
+    def _update_contrast_hint(self):
+        """标题 / 正文和背景差得太少时提醒一句。
+
+        白底白字调完才发现「字没了」，那时只会以为程序坏了。
+        按 WCAG 的对比度算，2.5 以下基本就是看不清。
+        """
+        if self.cb_theme.currentData() != "custom":
+            self.lb_contrast.setText("")
+            self.lb_contrast.setVisible(False)
+            return
+
+        bg = self.cr_bg.value()
+        weak = [name for name, c in
+                (("标题", self.cr_title.value()), ("正文", self.cr_body.value()))
+                if contrast_ratio(bg, c) < 2.5]
+        if weak:
+            self.lb_contrast.setText("、".join(weak) + "和背景颜色太接近，可能看不清")
+            self.lb_contrast.setVisible(True)
+        else:
+            self.lb_contrast.setText("")
+            self.lb_contrast.setVisible(False)
+
+    def _seed_custom_from_preset(self):
+        """切到「自定义」时，色值从用户刚才看到的那套配色起手。
+
+        否则从浅色切过去会突然变成深色，第一眼像是主题丢了。
+        只在四项都还是初始默认（深色）时才铺：用户已经调过就原样保留，
+        免得来回切换把自己配好的颜色冲掉。
+        """
+        d = cfgmod.DEFAULT_CONFIG
+        untouched = (
+            self.cr_bg.value() == d["custom_bg"]
+            and self.cr_title.value() == d["custom_title"]
+            and self.cr_body.value() == d["custom_body"]
+            and self.cr_border.value() == d["custom_border"]
+        )
+        if not untouched:
+            return
+        base = THEMES.get(self._last_preset, THEMES["dark"])
+        self.cr_bg.set_value(base["bg"].name())
+        self.cr_title.set_value(base["title"])
+        self.cr_body.set_value(base["body"])
+        self.cr_border.set_value(base["border"].name())
+
     def _on_widget_change(self, *_):
         if self._loading:
             return
         self._collect()
         self._update_apps_hint()
+        self._update_contrast_hint()
         self._preview_timer.start(90)       # 防抖，拖动滑块时不至于卡
         self._autosave_timer.start(500)     # 停手半秒后自动落盘
 

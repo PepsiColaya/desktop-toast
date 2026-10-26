@@ -33,6 +33,42 @@ THEMES = {
     },
 }
 
+# 自定义配色的兜底值：用户把颜色写坏时按这套走，不至于变成纯黑一片
+_CUSTOM_FALLBACK = THEMES["dark"]
+
+
+def _qcolor(val, fallback: QColor) -> QColor:
+    """把配置里的颜色字符串转成 QColor，非法时回落到 fallback。
+
+    QColor 遇到 "#GGG" 这类字符串不会报错，只会得到一个 isValid() 为 False
+    的对象，直接拿去画就是全黑，所以这里必须显式判断。
+    """
+    c = QColor(str(val or "").strip())
+    return c if c.isValid() else QColor(fallback)
+
+
+def resolve_theme(cfg: dict) -> dict:
+    """按配置解析出实际使用的配色。
+
+    ``dark`` / ``light`` 用预置配色；``custom`` 则读用户选的四项颜色
+    （背景 / 边框 / 标题 / 正文）。返回结构固定是
+    ``{"bg": QColor, "border": QColor, "title": str, "body": str}``。
+    """
+    name = str(cfg.get("theme", "dark") or "dark")
+    if name != "custom":
+        return THEMES.get(name, _CUSTOM_FALLBACK)
+
+    bg = _qcolor(cfg.get("custom_bg"), _CUSTOM_FALLBACK["bg"])
+    border = _qcolor(cfg.get("custom_border"), _CUSTOM_FALLBACK["border"])
+    title = _qcolor(cfg.get("custom_title"), QColor(_CUSTOM_FALLBACK["title"]))
+    body = _qcolor(cfg.get("custom_body"), QColor(_CUSTOM_FALLBACK["body"]))
+    return {
+        "bg": bg,
+        "border": border,
+        "title": title.name().upper(),
+        "body": body.name().upper(),
+    }
+
 # 头像占位色：成对渐变，按名字散列固定挑选
 AVATAR_GRADIENTS = [
     ("#6EA8FE", "#3B6FD4"),
@@ -167,7 +203,7 @@ class Toast(QWidget):
         self.msg = msg
         self.cfg = cfg
         self.on_open = on_open or (lambda _m: None)
-        self.theme = THEMES.get(cfg.get("theme", "dark"), THEMES["dark"])
+        self.theme = resolve_theme(cfg)
 
         self._hovering = False
         self._closing = False

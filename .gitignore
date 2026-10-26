@@ -37,3 +37,6 @@ avatars/*
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本地工作区数据（截图、缓存等，不入库）
+.workbuddy-ai/
